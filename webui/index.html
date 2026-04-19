@@ -33,6 +33,12 @@
     ::-webkit-scrollbar-track { background: #0b1120; }
     ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #374151; }
+    [x-cloak] { display: none !important; }
+    .chart-shell { position: relative; width: 100%; height: 20rem; min-height: 20rem; }
+    .chart-shell canvas { display: block; width: 100% !important; height: 100% !important; }
+    @media (max-width: 768px) {
+      .chart-shell { height: 16rem; min-height: 16rem; }
+    }
   </style>
 </head>
 <body>
@@ -79,17 +85,17 @@
           </div>
         </div>
         <nav class="flex-1 px-3 py-4 space-y-1 text-sm">
-          <button @click="view='dashboard'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='dashboard' ? 'active' : ''">
+          <button @click="setView('dashboard')" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='dashboard' ? 'active' : ''">
             <span>概览</span>
           </button>
-          <button @click="view='tokens'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='tokens' ? 'active' : ''">
+          <button @click="setView('tokens')" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='tokens' ? 'active' : ''">
             <span>Tokens</span>
             <span class="ml-auto tag tag-mute" x-text="tokens.length"></span>
           </button>
-          <button @click="view='traffic'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='traffic' ? 'active' : ''">
+          <button @click="setView('traffic')" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='traffic' ? 'active' : ''">
             <span>流量统计</span>
           </button>
-          <button @click="view='settings'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='settings' ? 'active' : ''">
+          <button @click="setView('settings')" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='settings' ? 'active' : ''">
             <span>设置</span>
           </button>
         </nav>
@@ -153,7 +159,9 @@
                 </template>
               </div>
             </div>
-            <canvas id="dashboardChart" height="120"></canvas>
+            <div class="chart-shell mt-3">
+              <canvas id="dashboardChart"></canvas>
+            </div>
           </div>
 
           <div class="card rounded-xl p-5 mt-6">
@@ -173,7 +181,7 @@
               </template>
             </div>
             <div class="text-slate-500 text-sm" x-show="tokens.length === 0">
-              还没有 token，请到 <button class="text-blue-400 hover:underline" @click="view='tokens'">Tokens</button> 页面添加。
+              还没有 token，请到 <button class="text-blue-400 hover:underline" @click="setView('tokens')">Tokens</button> 页面添加。
             </div>
           </div>
         </section>
@@ -262,7 +270,9 @@
                 </template>
               </div>
             </div>
-            <canvas id="trafficChart" height="140"></canvas>
+            <div class="chart-shell">
+              <canvas id="trafficChart"></canvas>
+            </div>
           </div>
 
           <div class="card rounded-xl p-5 mt-6">
@@ -438,11 +448,23 @@ function adminApp() {
     },
 
     async logout() {
-      try {
-        await fetch('/admin/api/logout', { method: 'POST', credentials: 'same-origin' });
-      } catch (_) {}
-      this.authenticated = false;
+      await fetch('/admin/api/logout', { method: 'POST', credentials: 'same-origin' });
       this.stopAutoRefresh();
+      this.authenticated = false;
+      this.tokens = [];
+    },
+
+    setView(nextView) {
+      this.view = nextView;
+      this.$nextTick(() => {
+        if (nextView === 'dashboard') {
+          this.renderDashboardChart();
+          return;
+        }
+        if (nextView === 'traffic') {
+          this.renderTrafficChart();
+        }
+      });
     },
 
     viewTitle() {
@@ -582,7 +604,7 @@ function adminApp() {
 
     renderDashboardChart() {
       const el = document.getElementById('dashboardChart');
-      if (!el) return;
+      if (!el || el.offsetParent === null) return;
       const labels = this.chartLabels();
       const datasets = [
         {
@@ -609,7 +631,7 @@ function adminApp() {
 
     renderTrafficChart() {
       const el = document.getElementById('trafficChart');
-      if (!el) return;
+      if (!el || el.offsetParent === null) return;
       const labels = this.chartLabels();
       const datasets = [
         {
@@ -700,6 +722,7 @@ function upsertChart(instance, el, labels, datasets) {
   if (instance) {
     instance.data.labels = labels;
     instance.data.datasets = datasets;
+    instance.resize();
     instance.update('none');
     return instance;
   }

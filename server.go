@@ -40,13 +40,23 @@ func NewServer(cfg Config, logger *log.Logger, registry *ModelRegistry, metrics 
 
 func (s *Server) Handler(admin *AdminHandler) http.Handler {
 	mux := http.NewServeMux()
+	adminEnabled := admin != nil && admin.Enabled()
+	if adminEnabled {
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/" {
+				http.NotFound(w, r)
+				return
+			}
+			http.Redirect(w, r, "/admin/", http.StatusFound)
+		})
+	}
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
-	if admin != nil {
+	if adminEnabled {
 		admin.Register(mux)
 	}
-	return s.withMiddleware(mux)
+	return s.withMiddleware(mux, adminEnabled)
 }
 
 func (s *Server) Start(ctx context.Context) {
@@ -57,10 +67,10 @@ func (s *Server) Shutdown(ctx context.Context) {
 	s.runs.Close(ctx)
 }
 
-func (s *Server) withMiddleware(next http.Handler) http.Handler {
+func (s *Server) withMiddleware(next http.Handler, adminEnabled bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Admin WebUI/API manages its own authentication.
-		if strings.HasPrefix(r.URL.Path, "/admin") {
+		if adminEnabled && (r.URL.Path == "/" || r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/")) {
 			next.ServeHTTP(w, r)
 			return
 		}
