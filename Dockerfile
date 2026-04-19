@@ -14,8 +14,7 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /Freebuff2API /usr/local/bin/Freebuff2API
-RUN ln -s /usr/local/bin/Freebuff2API
 # Expose proxy port
 EXPOSE 8080
 
-ENTRYPOINT ["Freebuff2API"]
+ENTRYPOINT ["/usr/local/bin/Freebuff2API"]

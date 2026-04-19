@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -46,6 +47,8 @@ func loadConfig(configPath string) (Config, error) {
 	overrideCSV(&cfg.APIKeys, "API_KEYS")
 	overrideString(&cfg.HTTPProxy, "HTTP_PROXY")
 
+	listenAddr := resolveListenAddr(cfg.ListenAddr)
+
 	rotationInterval, err := time.ParseDuration(strings.TrimSpace(cfg.RotationInterval))
 	if err != nil {
 		return Config{}, fmt.Errorf("parse rotation interval: %w", err)
@@ -57,7 +60,7 @@ func loadConfig(configPath string) (Config, error) {
 	}
 
 	finalCfg := Config{
-		ListenAddr:       strings.TrimSpace(cfg.ListenAddr),
+		ListenAddr:       listenAddr,
 		UpstreamBaseURL:  strings.TrimRight(strings.TrimSpace(cfg.UpstreamBaseURL), "/"),
 		AuthTokens:       dedupeStrings(cfg.AuthTokens),
 		RotationInterval: rotationInterval,
@@ -87,7 +90,6 @@ func loadConfig(configPath string) (Config, error) {
 
 func loadRawConfig(configPath string) (rawConfig, error) {
 	cfg := rawConfig{
-		ListenAddr:       ":8080",
 		UpstreamBaseURL:  "https://codebuff.com",
 		RotationInterval: "6h",
 		RequestTimeout:   "15m",
@@ -108,6 +110,35 @@ func loadRawConfig(configPath string) (rawConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func resolveListenAddr(value string) string {
+	if envListenAddr := strings.TrimSpace(os.Getenv("LISTEN_ADDR")); envListenAddr != "" {
+		return normalizeListenAddr(envListenAddr)
+	}
+
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		return normalizeListenAddr(port)
+	}
+
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return normalizeListenAddr(value)
+	}
+
+	return ":8080"
+}
+
+func normalizeListenAddr(value string) string {
+	if strings.HasPrefix(value, ":") {
+		return value
+	}
+
+	if _, err := strconv.Atoi(value); err == nil {
+		return ":" + value
+	}
+
+	return value
 }
 
 func overrideString(target *string, envName string) {
