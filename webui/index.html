@@ -193,6 +193,7 @@
               <div class="flex-1">
                 <div class="text-sm font-medium mb-1">添加 Token</div>
                 <div class="text-xs text-slate-500">Token 仅用于本机代理请求上游，添加后立即启用。</div>
+                <div class="text-xs text-slate-500 mt-1">调试提示：若状态显示“未初始化”或“等待预热”，说明 token 已导入，但 free session 还没建立完成；如果失败原因明确，会直接显示在对应 token 下方。</div>
               </div>
             </div>
             <form @submit.prevent="createToken" class="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -243,8 +244,12 @@
                     </td>
                     <td class="px-5 py-4 align-top">
                       <span class="tag" :class="sessionTagClass(t)" x-text="sessionLabel(t)"></span>
-                      <div class="text-xs text-slate-500 mt-1" x-show="t.pool?.last_error" x-text="t.pool?.last_error"></div>
-                      <div class="text-xs text-slate-500 mt-1" x-show="t.pool?.session_expires_at" x-text="t.pool?.session_expires_at ? '到期 ' + formatTime(t.pool.session_expires_at) : ''"></div>
+                      <div class="text-xs text-slate-500 mt-1" x-show="sessionRawStatus(t)" x-text="'原始状态：' + sessionRawStatus(t)"></div>
+                      <div class="text-xs text-rose-400 mt-1 break-all" x-show="t.pool?.last_error" x-text="t.pool?.last_error"></div>
+                      <div class="text-xs text-slate-500 mt-1 font-mono break-all" x-show="t.pool?.session_instance_id" x-text="'实例：' + t.pool.session_instance_id"></div>
+                      <div class="text-xs text-slate-500 mt-1" x-show="hasMeaningfulTime(t.pool?.session_expires_at)" x-text="'到期 ' + formatTime(t.pool.session_expires_at)"></div>
+                      <div class="text-xs text-amber-300 mt-1" x-show="hasMeaningfulTime(t.pool?.cooldown_until)" x-text="'冷却至 ' + formatTime(t.pool.cooldown_until)"></div>
+                      <div class="text-xs text-slate-500 mt-1" x-show="t.pool" x-text="runSummary(t)"></div>
                     </td>
                     <td class="px-5 py-4 align-top text-right tabular-nums">
                       <div class="font-medium" x-text="formatNumber(t.stats?.total)"></div>
@@ -715,10 +720,14 @@ function adminApp() {
       if (ms < 1000) return ms + 'ms';
       return (ms / 1000).toFixed(1) + 's';
     },
-    formatTime(iso) {
-      if (!iso) return '';
+    hasMeaningfulTime(iso) {
+      if (!iso) return false;
       const d = new Date(iso);
-      if (isNaN(d.getTime())) return '';
+      return !isNaN(d.getTime()) && d.getUTCFullYear() > 1;
+    },
+    formatTime(iso) {
+      if (!this.hasMeaningfulTime(iso)) return '';
+      const d = new Date(iso);
       return d.toLocaleString();
     },
     formatRelative(date) {
@@ -732,6 +741,7 @@ function adminApp() {
     sessionLabel(t) {
       if (!t.pool) return '未初始化';
       if (!t.enabled) return '已禁用';
+      if (!t.pool.session_status) return '等待预热';
       switch (t.pool.session_status) {
         case 'active': return '就绪';
         case 'queued': return '排队中';
@@ -739,23 +749,29 @@ function adminApp() {
         case 'superseded': return '已替换';
         case 'disabled': return '未使用会话';
         case 'none': return '会话待建立';
-        default: return t.pool.session_status || '未知';
+        default: return t.pool.session_status || '等待预热';
       }
+    },
+    sessionRawStatus(t) {
+      if (!t.pool) return '';
+      return t.pool.session_status || 'empty';
     },
     sessionTagClass(t) {
       if (!t.enabled) return 'tag-mute';
-      if (!t.pool) return 'tag-mute';
+      if (!t.pool) return 'tag-warn';
       if (t.pool.last_error) return 'tag-err';
       if (t.pool.session_status === 'active' || t.pool.session_status === 'disabled') return 'tag-ok';
       if (t.pool.session_status === 'queued') return 'tag-warn';
+      if (!t.pool.session_status) return 'tag-warn';
       return 'tag-mute';
     },
     healthDotClass(t) {
       if (!t.enabled) return 'bg-slate-500';
-      if (!t.pool) return 'bg-slate-500';
+      if (!t.pool) return 'bg-amber-400';
       if (t.pool.last_error) return 'bg-rose-500';
       if (t.pool.session_status === 'active' || t.pool.session_status === 'disabled') return 'bg-emerald-500';
       if (t.pool.session_status === 'queued') return 'bg-amber-400';
+      if (!t.pool.session_status) return 'bg-amber-400';
       return 'bg-slate-500';
     },
     healthDescription(t) {
@@ -763,6 +779,12 @@ function adminApp() {
       if (!t.pool) return '未初始化';
       if (t.pool.last_error) return t.pool.last_error;
       return this.sessionLabel(t);
+    },
+    runSummary(t) {
+      if (!t.pool) return '';
+      const runs = Array.isArray(t.pool.runs) ? t.pool.runs.length : 0;
+      const draining = t.pool.draining_runs || 0;
+      return '活跃 run ' + runs + ' · draining ' + draining;
     },
     percentOfMax(v) {
       const max = Math.max(1, ...this.tokens.map((t) => t.stats?.total || 0));
