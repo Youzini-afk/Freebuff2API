@@ -115,6 +115,19 @@ func (m *EmbeddedMihomoManager) Groups() (EmbeddedMihomoGroups, error) {
 	}, nil
 }
 
+func (m *EmbeddedMihomoManager) RefreshProvider() (EmbeddedMihomoGroups, error) {
+	if !m.IsRunning() {
+		return EmbeddedMihomoGroups{}, fmt.Errorf("mihomo is not running")
+	}
+	if _, _, err := m.controllerRequest(context.Background(), http.MethodPut, "/providers/proxies/"+url.PathEscape("primary"), nil); err != nil {
+		return EmbeddedMihomoGroups{}, err
+	}
+	if err := m.waitUntilProviderReady(20 * time.Second); err != nil {
+		return EmbeddedMihomoGroups{}, err
+	}
+	return m.Groups()
+}
+
 func (m *EmbeddedMihomoManager) SelectProxy(groupName, proxyName string) (EmbeddedMihomoGroups, error) {
 	if !m.IsRunning() {
 		return EmbeddedMihomoGroups{}, fmt.Errorf("mihomo is not running")

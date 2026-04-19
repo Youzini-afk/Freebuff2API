@@ -408,7 +408,17 @@ func (a *AdminHandler) handleProxySubscription(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "proxy": status})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"proxy": status})
+	response := map[string]any{"proxy": status}
+	if status.Running {
+		groups, groupErr := a.proxy.RefreshProvider()
+		if groupErr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": groupErr.Error(), "proxy": a.proxy.Status()})
+			return
+		}
+		response["proxy"] = a.proxy.Status()
+		response["groups"] = groups
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *AdminHandler) handleProxyGroups(w http.ResponseWriter, r *http.Request) {

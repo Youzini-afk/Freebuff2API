@@ -809,10 +809,11 @@ function adminApp() {
         }
         this.proxySubscriptionDirty = false;
         this.proxyStatus = data.proxy || this.proxyStatus;
-        this.proxyGroups = { running: !!this.proxyStatus?.running, selected_group: '', groups: [] };
-        this.proxyForm.groupName = '';
+        this.proxyGroups = data.groups || { running: !!this.proxyStatus?.running, selected_group: '', groups: [] };
+        this.proxyForm.groupName = this.proxyGroups?.selected_group || '';
         this.proxyForm.proxyName = '';
         this.upstreamProbe = null;
+        this.syncProxyForm();
         await this.refreshAll(true);
         await this.refreshProxyLogs();
         this.toast('订阅地址已保存');

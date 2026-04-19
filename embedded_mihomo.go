@@ -471,7 +471,7 @@ func (m *EmbeddedMihomoManager) Start() (EmbeddedMihomoStatus, error) {
 		return m.Status(), err
 	}
 	if refreshProvider {
-		if err := m.waitUntilProviderReady(20 * time.Second); err != nil {
+		if _, err := m.RefreshProvider(); err != nil {
 			_, _ = m.Stop()
 			m.mu.Lock()
 			m.state.LastError = err.Error()
