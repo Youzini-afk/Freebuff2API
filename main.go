@@ -24,7 +24,7 @@ func main() {
 
 	// Auto-detect config.json in CWD when no flag is given
 	if *configPath == "" {
-		if _, err := os.Stat("config.json"); err == nil {
+		if info, err := os.Stat("config.json"); err == nil && info.Mode().IsRegular() {
 			*configPath = "config.json"
 		}
 	}
