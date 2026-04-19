@@ -30,6 +30,7 @@ type AdminHandler struct {
 	store    *TokenStore
 	runs     *RunManager
 	metrics  *Metrics
+	proxy    *EmbeddedMihomoManager
 	staticFS fs.FS
 
 	hmacKey []byte
@@ -37,7 +38,7 @@ type AdminHandler struct {
 
 // NewAdminHandler returns an initialised admin handler. staticFS may be nil
 // when the WebUI is not bundled (the API endpoints remain usable).
-func NewAdminHandler(cfg Config, logger *log.Logger, store *TokenStore, runs *RunManager, metrics *Metrics, staticFS fs.FS) (*AdminHandler, error) {
+func NewAdminHandler(cfg Config, logger *log.Logger, store *TokenStore, runs *RunManager, metrics *Metrics, proxy *EmbeddedMihomoManager, staticFS fs.FS) (*AdminHandler, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generate admin session key: %w", err)
@@ -48,6 +49,7 @@ func NewAdminHandler(cfg Config, logger *log.Logger, store *TokenStore, runs *Ru
 		store:    store,
 		runs:     runs,
 		metrics:  metrics,
+		proxy:    proxy,
 		staticFS: staticFS,
 		hmacKey:  key,
 	}, nil
@@ -76,6 +78,15 @@ func (a *AdminHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/metrics", a.authed(a.handleMetrics))
 	mux.HandleFunc("/admin/api/metrics/token/", a.authed(a.handleMetricsForToken))
 	mux.HandleFunc("/admin/api/config", a.authed(a.handleConfigSummary))
+	mux.HandleFunc("/admin/api/proxy/status", a.authed(a.handleProxyStatus))
+	mux.HandleFunc("/admin/api/proxy/start", a.authed(a.handleProxyStart))
+	mux.HandleFunc("/admin/api/proxy/stop", a.authed(a.handleProxyStop))
+	mux.HandleFunc("/admin/api/proxy/restart", a.authed(a.handleProxyRestart))
+	mux.HandleFunc("/admin/api/proxy/subscription", a.authed(a.handleProxySubscription))
+	mux.HandleFunc("/admin/api/proxy/groups", a.authed(a.handleProxyGroups))
+	mux.HandleFunc("/admin/api/proxy/select", a.authed(a.handleProxySelect))
+	mux.HandleFunc("/admin/api/proxy/probe", a.authed(a.handleProxyProbe))
+	mux.HandleFunc("/admin/api/proxy/logs", a.authed(a.handleProxyLogs))
 }
 
 // -----------------------------------------------------------------------------
@@ -289,8 +300,151 @@ func (a *AdminHandler) handleConfigSummary(w http.ResponseWriter, r *http.Reques
 		"request_timeout":   a.cfg.RequestTimeout.String(),
 		"data_dir":          a.cfg.DataDir,
 		"api_keys_enabled":  len(a.cfg.APIKeys) > 0,
+		"proxy_backend_mode": a.cfg.ProxyBackendMode,
 		"http_proxy_set":    strings.TrimSpace(a.cfg.HTTPProxy) != "",
+		"embedded_mihomo_mixed_port": a.cfg.EmbeddedMihomoMixedPort,
+		"embedded_mihomo_controller_port": a.cfg.EmbeddedMihomoControllerPort,
+		"embedded_mihomo_group_name": a.cfg.EmbeddedMihomoGroupName,
+		"embedded_mihomo_binary_path_set": strings.TrimSpace(a.cfg.EmbeddedMihomoBinaryPath) != "",
 	})
+}
+
+func (a *AdminHandler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.proxy.Status())
+}
+
+func (a *AdminHandler) handleProxyStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	status, err := a.proxy.Start()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "proxy": status})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxy": status})
+}
+
+func (a *AdminHandler) handleProxyStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	status, err := a.proxy.Stop()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error(), "proxy": status})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxy": status})
+}
+
+func (a *AdminHandler) handleProxyRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	status, err := a.proxy.Restart()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "proxy": status})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxy": status})
+}
+
+func (a *AdminHandler) handleProxySubscription(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	var body struct {
+		SubscriptionURL string `json:"subscription_url"`
+		RestartIfRunning *bool `json:"restart_if_running"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	restartIfRunning := true
+	if body.RestartIfRunning != nil {
+		restartIfRunning = *body.RestartIfRunning
+	}
+	status, err := a.proxy.UpdateSubscription(body.SubscriptionURL, restartIfRunning)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "proxy": status})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"proxy": status})
+}
+
+func (a *AdminHandler) handleProxyGroups(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	groups, err := a.proxy.Groups()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"running":        false,
+			"selected_group": a.cfg.EmbeddedMihomoGroupName,
+			"groups":         []any{},
+			"error":          err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, groups)
+}
+
+func (a *AdminHandler) handleProxySelect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	var body struct {
+		GroupName string `json:"group_name"`
+		ProxyName string `json:"proxy_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	groups, err := a.proxy.SelectProxy(body.GroupName, body.ProxyName)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"groups": groups, "proxy": a.proxy.Status()})
+}
+
+func (a *AdminHandler) handleProxyProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	probe, err := a.proxy.ProbeExit()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "probe": probe, "proxy": a.proxy.Status()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"probe": probe, "proxy": a.proxy.Status()})
+}
+
+func (a *AdminHandler) handleProxyLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := 80
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": a.proxy.Logs(limit)})
 }
 
 // -----------------------------------------------------------------------------

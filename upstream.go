@@ -17,15 +17,13 @@ type UpstreamClient struct {
 	baseURL    string
 	httpClient *http.Client
 	userAgent  string
+	proxyMode  string
+	proxy      *EmbeddedMihomoManager
 }
 
-func NewUpstreamClient(cfg Config) *UpstreamClient {
+func NewUpstreamClient(cfg Config, proxy *EmbeddedMihomoManager) *UpstreamClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if cfg.HTTPProxy != "" {
-		if proxyURL, err := url.Parse(cfg.HTTPProxy); err == nil {
-			transport.Proxy = http.ProxyURL(proxyURL)
-		}
-	}
+	transport.Proxy = buildProxyFunc(cfg, proxy)
 
 	return &UpstreamClient{
 		baseURL: cfg.UpstreamBaseURL,
@@ -34,7 +32,44 @@ func NewUpstreamClient(cfg Config) *UpstreamClient {
 			Transport: transport,
 		},
 		userAgent: cfg.UserAgent,
+		proxyMode: cfg.ProxyBackendMode,
+		proxy:     proxy,
 	}
+}
+
+func buildProxyFunc(cfg Config, proxy *EmbeddedMihomoManager) func(*http.Request) (*url.URL, error) {
+	fallback := strings.TrimSpace(cfg.HTTPProxy)
+	return func(*http.Request) (*url.URL, error) {
+		if cfg.UsesEmbeddedMihomo() && proxy != nil {
+			if current := strings.TrimSpace(proxy.ProxyURL()); current != "" {
+				return url.Parse(current)
+			}
+			return nil, nil
+		}
+		if fallback == "" {
+			return nil, nil
+		}
+		return url.Parse(fallback)
+	}
+}
+
+func (c *UpstreamClient) do(req *http.Request) (*http.Response, error) {
+	if c.proxyMode == proxyBackendEmbeddedMihomo {
+		if c.proxy == nil {
+			return nil, fmt.Errorf("embedded mihomo proxy is not configured")
+		}
+		if !c.proxy.IsRunning() {
+			if lastErr := strings.TrimSpace(c.proxy.LastError()); lastErr != "" {
+				return nil, fmt.Errorf("embedded mihomo proxy is not running: %s", lastErr)
+			}
+			return nil, fmt.Errorf("embedded mihomo proxy is not running")
+		}
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send upstream request: %w", err)
+	}
+	return resp, nil
 }
 
 func (c *UpstreamClient) StartRun(ctx context.Context, authToken, agentID string) (string, error) {
@@ -137,9 +172,9 @@ func (c *UpstreamClient) doJSON(ctx context.Context, authToken, path string, bod
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", c.userAgent)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send upstream request: %w", err)
+		return nil, err
 	}
 	return resp, nil
 }

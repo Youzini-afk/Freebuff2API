@@ -301,7 +301,7 @@ func (c *UpstreamClient) EndSession(ctx context.Context, authToken string) error
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return fmt.Errorf("send free session delete request: %w", err)
 	}
@@ -342,7 +342,7 @@ func (c *UpstreamClient) doSessionRequest(ctx context.Context, method, authToken
 		req.Header.Set("x-freebuff-instance-id", instanceID)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return freeSessionResponse{}, fmt.Errorf("send free session request: %w", err)
 	}

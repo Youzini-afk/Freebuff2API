@@ -23,8 +23,8 @@ type Server struct {
 	started  time.Time
 }
 
-func NewServer(cfg Config, logger *log.Logger, registry *ModelRegistry, metrics *Metrics) *Server {
-	client := NewUpstreamClient(cfg)
+func NewServer(cfg Config, logger *log.Logger, registry *ModelRegistry, metrics *Metrics, proxy *EmbeddedMihomoManager) *Server {
+	client := NewUpstreamClient(cfg, proxy)
 	runManager := NewRunManager(cfg, client, logger)
 
 	return &Server{

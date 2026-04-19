@@ -347,7 +347,95 @@
                   <dt class="text-slate-500 text-xs">HTTP_PROXY</dt>
                   <dd><span class="tag" :class="config.http_proxy_set ? 'tag-warn' : 'tag-mute'" x-text="config.http_proxy_set ? '已设置' : '未设置'"></span></dd>
                 </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">PROXY_BACKEND_MODE</dt>
+                  <dd><span class="tag" :class="config.proxy_backend_mode === 'embedded_mihomo' ? 'tag-ok' : 'tag-mute'" x-text="config.proxy_backend_mode"></span></dd>
+                </div>
               </dl>
+            </template>
+          </div>
+
+          <div class="card rounded-xl p-5 mt-6">
+            <div class="flex items-center gap-3 mb-4">
+              <div class="flex-1">
+                <div class="text-sm font-medium">内置 Mihomo</div>
+                <div class="text-xs text-slate-500 mt-1">当 `PROXY_BACKEND_MODE=embedded_mihomo` 时，上游请求会走容器内置 mixed proxy，可用于规避地区限制并手动切换节点。</div>
+              </div>
+              <button @click="refreshProxyState()" class="btn btn-ghost px-3 py-2 rounded-lg text-xs">刷新代理状态</button>
+            </div>
+
+            <template x-if="proxyStatus">
+              <div class="space-y-5">
+                <div class="flex flex-wrap gap-2 text-xs">
+                  <span class="tag" :class="proxyStatus.mode === 'embedded_mihomo' ? 'tag-ok' : 'tag-mute'" x-text="'模式：' + (proxyStatus.mode || 'unknown')"></span>
+                  <span class="tag" :class="proxyStatus.running ? 'tag-ok' : 'tag-mute'" x-text="proxyStatus.running ? '核心运行中' : '核心未运行'"></span>
+                  <span class="tag" :class="proxyStatus.subscription_configured ? 'tag-ok' : 'tag-warn'" x-text="proxyStatus.subscription_configured ? '订阅已配置' : '订阅未配置'"></span>
+                  <span class="tag" :class="proxyStatus.last_probe_blocked ? 'tag-err' : (proxyStatus.last_probe_loc ? 'tag-ok' : 'tag-mute')" x-text="proxyStatus.last_probe_loc ? ('出口 ' + proxyStatus.last_probe_loc) : '出口待检测'"></span>
+                </div>
+
+                <form @submit.prevent="saveProxySubscription" class="grid grid-cols-1 md:grid-cols-5 gap-3">
+                  <input type="url" x-model="proxyForm.subscriptionUrl" @input="proxySubscriptionDirty = true" placeholder="Mihomo 订阅地址" class="input px-3 py-2 rounded-lg md:col-span-4 font-mono text-sm" />
+                  <button type="submit" :disabled="proxyBusy" class="btn btn-primary px-4 py-2 rounded-lg text-sm font-medium">保存订阅</button>
+                </form>
+
+                <div class="flex flex-wrap gap-3">
+                  <button @click="proxyControl('start')" :disabled="proxyBusy" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">启动</button>
+                  <button @click="proxyControl('restart')" :disabled="proxyBusy" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">重启</button>
+                  <button @click="proxyControl('stop')" :disabled="proxyBusy" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">停止</button>
+                  <button @click="probeProxyExit()" :disabled="probeBusy || !proxyStatus.running" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">测试出口</button>
+                  <button @click="refreshProxyLogs()" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">刷新日志</button>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                  <div>
+                    <div class="text-slate-500 text-xs">Mixed Proxy</div>
+                    <div class="font-mono break-all" x-text="proxyStatus.mixed_proxy_url || ''"></div>
+                  </div>
+                  <div>
+                    <div class="text-slate-500 text-xs">Controller</div>
+                    <div class="font-mono break-all" x-text="proxyStatus.controller_url || ''"></div>
+                  </div>
+                  <div>
+                    <div class="text-slate-500 text-xs">当前策略组</div>
+                    <div class="font-mono" x-text="proxyStatus.current_group || '—'"></div>
+                  </div>
+                  <div>
+                    <div class="text-slate-500 text-xs">当前节点</div>
+                    <div class="font-mono break-all" x-text="proxyStatus.current_proxy || '—'"></div>
+                  </div>
+                  <div>
+                    <div class="text-slate-500 text-xs">二进制</div>
+                    <div class="font-mono break-all" x-text="proxyStatus.binary_path || '未找到' "></div>
+                  </div>
+                  <div>
+                    <div class="text-slate-500 text-xs">配置目录</div>
+                    <div class="font-mono break-all" x-text="proxyStatus.data_dir || ''"></div>
+                  </div>
+                </div>
+
+                <div class="text-sm text-rose-400 break-all" x-show="proxyStatus.last_error" x-text="proxyStatus.last_error"></div>
+                <div class="text-xs text-slate-500" x-show="proxyStatus.last_probe_at" x-text="proxyProbeSummary()"></div>
+                <div class="text-xs text-rose-400" x-show="proxyError" x-text="proxyError"></div>
+
+                <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
+                  <select x-model="proxyForm.groupName" @change="setProxyGroup(proxyForm.groupName)" class="input px-3 py-2 rounded-lg md:col-span-2">
+                    <template x-for="group in (proxyGroups.groups || [])" :key="group.name">
+                      <option :value="group.name" x-text="group.name"></option>
+                    </template>
+                  </select>
+                  <select x-model="proxyForm.proxyName" class="input px-3 py-2 rounded-lg md:col-span-2">
+                    <template x-for="name in selectedProxyOptions()" :key="name">
+                      <option :value="name" x-text="name"></option>
+                    </template>
+                  </select>
+                  <button @click="applyProxySelection()" :disabled="proxyBusy || !proxyForm.groupName || !proxyForm.proxyName" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">切换节点</button>
+                </div>
+
+                <div>
+                  <div class="text-xs text-slate-500 mb-2">Mihomo 日志</div>
+                  <pre class="bg-slate-950/80 border border-slate-800 rounded-xl p-4 text-xs text-slate-300 overflow-auto max-h-64" x-text="(proxyLogs && proxyLogs.length) ? proxyLogs.join('\n') : '暂无日志'"></pre>
+                </div>
+              </div>
             </template>
           </div>
 
@@ -394,6 +482,14 @@ function adminApp() {
     tokens: [],
     series: [],
     config: null,
+    proxyStatus: null,
+    proxyGroups: { running: false, selected_group: '', groups: [] },
+    proxyLogs: [],
+    proxyError: '',
+    proxyBusy: false,
+    probeBusy: false,
+    proxySubscriptionDirty: false,
+    proxyForm: { subscriptionUrl: '', groupName: '', proxyName: '' },
 
     rangeMinutes: 60,
     rangeOptions: [
@@ -486,6 +582,10 @@ function adminApp() {
         }
         if (nextView === 'traffic') {
           this.renderTrafficChart();
+          return;
+        }
+        if (nextView === 'settings') {
+          this.refreshProxyLogs();
         }
       });
     },
@@ -504,11 +604,13 @@ function adminApp() {
       if (!this.authenticated) return;
       if (!silent) this.loading = true;
       try {
-        const [ovRes, tkRes, mRes, cfgRes] = await Promise.all([
+        const [ovRes, tkRes, mRes, cfgRes, proxyRes, proxyGroupsRes] = await Promise.all([
           fetch('/admin/api/overview', { credentials: 'same-origin' }),
           fetch('/admin/api/tokens', { credentials: 'same-origin' }),
           fetch('/admin/api/metrics?range=' + this.rangeMinutes, { credentials: 'same-origin' }),
           fetch('/admin/api/config', { credentials: 'same-origin' }),
+          fetch('/admin/api/proxy/status', { credentials: 'same-origin' }),
+          fetch('/admin/api/proxy/groups', { credentials: 'same-origin' }),
         ]);
         if (ovRes.status === 401) { this.authenticated = false; this.stopAutoRefresh(); return; }
         this.overview = await ovRes.json();
@@ -517,6 +619,11 @@ function adminApp() {
         const m = await mRes.json();
         this.series = m.series || [];
         this.config = await cfgRes.json();
+        const proxyData = await proxyRes.json().catch(() => ({}));
+        this.proxyStatus = proxyData.proxy || proxyData;
+        const proxyGroupsData = await proxyGroupsRes.json().catch(() => ({ running: false, selected_group: '', groups: [] }));
+        this.proxyGroups = proxyGroupsData;
+        this.syncProxyForm();
         this.lastRefreshedAt = new Date();
         this.$nextTick(() => {
           this.renderDashboardChart();
@@ -532,6 +639,172 @@ function adminApp() {
     async setRange(v) {
       this.rangeMinutes = v;
       await this.refreshAll(true);
+    },
+
+    syncProxyForm() {
+      if (this.proxyStatus && !this.proxySubscriptionDirty) {
+        this.proxyForm.subscriptionUrl = this.proxyStatus.subscription_url || '';
+      }
+      const groups = (this.proxyGroups && this.proxyGroups.groups) ? this.proxyGroups.groups : [];
+      if (!groups.length) {
+        this.proxyForm.groupName = '';
+        this.proxyForm.proxyName = '';
+        return;
+      }
+      const wantedGroup = this.proxyForm.groupName || this.proxyGroups.selected_group || (groups[0] && groups[0].name) || '';
+      const group = groups.find((item) => item.name === wantedGroup) || groups[0];
+      this.proxyForm.groupName = group ? group.name : '';
+      const options = group && Array.isArray(group.all) ? group.all : [];
+      if (!options.length) {
+        this.proxyForm.proxyName = '';
+        return;
+      }
+      if (!options.includes(this.proxyForm.proxyName)) {
+        this.proxyForm.proxyName = group.now || options[0] || '';
+      }
+    },
+
+    selectedProxyOptions() {
+      const groups = (this.proxyGroups && this.proxyGroups.groups) ? this.proxyGroups.groups : [];
+      const group = groups.find((item) => item.name === this.proxyForm.groupName);
+      return group && Array.isArray(group.all) ? group.all : [];
+    },
+
+    setProxyGroup(groupName) {
+      this.proxyForm.groupName = groupName;
+      const groups = (this.proxyGroups && this.proxyGroups.groups) ? this.proxyGroups.groups : [];
+      const group = groups.find((item) => item.name === groupName);
+      const options = group && Array.isArray(group.all) ? group.all : [];
+      this.proxyForm.proxyName = group ? (group.now || options[0] || '') : '';
+    },
+
+    proxyProbeSummary() {
+      if (!this.proxyStatus || !this.proxyStatus.last_probe_at) return '';
+      const ip = this.proxyStatus.last_probe_ip || 'unknown';
+      const loc = this.proxyStatus.last_probe_loc || 'unknown';
+      if (this.proxyStatus.last_probe_error) {
+        return '最近探测失败：' + this.proxyStatus.last_probe_error;
+      }
+      return '最近出口探测：' + ip + ' / ' + loc + (this.proxyStatus.last_probe_blocked ? '（受限地区）' : '');
+    },
+
+    async refreshProxyState() {
+      await this.refreshAll(true);
+      if (this.view === 'settings') {
+        await this.refreshProxyLogs();
+      }
+    },
+
+    async proxyControl(action) {
+      this.proxyBusy = true;
+      this.proxyError = '';
+      try {
+        const res = await fetch('/admin/api/proxy/' + action, {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.proxyError = data.error || '代理操作失败';
+        } else {
+          this.proxyStatus = data.proxy || this.proxyStatus;
+          this.toast(action === 'start' ? '代理已启动' : action === 'stop' ? '代理已停止' : '代理已重启');
+        }
+        await this.refreshAll(true);
+        await this.refreshProxyLogs();
+      } catch (err) {
+        this.proxyError = String(err);
+      } finally {
+        this.proxyBusy = false;
+      }
+    },
+
+    async saveProxySubscription() {
+      this.proxyBusy = true;
+      this.proxyError = '';
+      try {
+        const res = await fetch('/admin/api/proxy/subscription', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ subscription_url: this.proxyForm.subscriptionUrl, restart_if_running: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.proxyError = data.error || '保存订阅失败';
+          return;
+        }
+        this.proxySubscriptionDirty = false;
+        this.proxyStatus = data.proxy || this.proxyStatus;
+        await this.refreshAll(true);
+        await this.refreshProxyLogs();
+        this.toast('订阅地址已保存');
+      } catch (err) {
+        this.proxyError = String(err);
+      } finally {
+        this.proxyBusy = false;
+      }
+    },
+
+    async applyProxySelection() {
+      if (!this.proxyForm.groupName || !this.proxyForm.proxyName) return;
+      this.proxyBusy = true;
+      this.proxyError = '';
+      try {
+        const res = await fetch('/admin/api/proxy/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ group_name: this.proxyForm.groupName, proxy_name: this.proxyForm.proxyName }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.proxyError = data.error || '切换节点失败';
+          return;
+        }
+        this.proxyGroups = data.groups || this.proxyGroups;
+        this.proxyStatus = data.proxy || this.proxyStatus;
+        this.syncProxyForm();
+        this.toast('节点已切换');
+      } catch (err) {
+        this.proxyError = String(err);
+      } finally {
+        this.proxyBusy = false;
+      }
+    },
+
+    async probeProxyExit() {
+      this.probeBusy = true;
+      this.proxyError = '';
+      try {
+        const res = await fetch('/admin/api/proxy/probe', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.proxyError = data.error || '出口探测失败';
+          this.proxyStatus = data.proxy || this.proxyStatus;
+          return;
+        }
+        this.proxyStatus = data.proxy || this.proxyStatus;
+        const probe = data.probe || {};
+        this.toast(probe.loc ? ('出口地区：' + probe.loc) : '出口探测完成');
+      } catch (err) {
+        this.proxyError = String(err);
+      } finally {
+        this.probeBusy = false;
+      }
+    },
+
+    async refreshProxyLogs() {
+      try {
+        const res = await fetch('/admin/api/proxy/logs?limit=80', { credentials: 'same-origin' });
+        const data = await res.json().catch(() => ({}));
+        this.proxyLogs = data.lines || [];
+      } catch (err) {
+        this.proxyLogs = ['读取日志失败：' + String(err)];
+      }
     },
 
     async createToken() {

@@ -20,9 +20,17 @@ type Config struct {
 	RequestTimeout   time.Duration
 	UserAgent        string
 	APIKeys          []string
+	ProxyBackendMode string
 	HTTPProxy        string
 	DataDir          string
 	AdminPassword    string
+	EmbeddedMihomoSubscriptionURL string
+	EmbeddedMihomoBinaryPath      string
+	EmbeddedMihomoMixedPort       int
+	EmbeddedMihomoControllerPort  int
+	EmbeddedMihomoSecret          string
+	EmbeddedMihomoGroupName       string
+	EmbeddedMihomoTestURL         string
 }
 
 type rawConfig struct {
@@ -32,9 +40,17 @@ type rawConfig struct {
 	RotationInterval string   `json:"ROTATION_INTERVAL"`
 	RequestTimeout   string   `json:"REQUEST_TIMEOUT"`
 	APIKeys          []string `json:"API_KEYS"`
+	ProxyBackendMode string   `json:"PROXY_BACKEND_MODE"`
 	HTTPProxy        string   `json:"HTTP_PROXY"`
 	DataDir          string   `json:"DATA_DIR"`
 	AdminPassword    string   `json:"ADMIN_PASSWORD"`
+	EmbeddedMihomoSubscriptionURL string `json:"EMBEDDED_MIHOMO_SUBSCRIPTION_URL"`
+	EmbeddedMihomoBinaryPath      string `json:"EMBEDDED_MIHOMO_BINARY_PATH"`
+	EmbeddedMihomoMixedPort       int    `json:"EMBEDDED_MIHOMO_MIXED_PORT"`
+	EmbeddedMihomoControllerPort  int    `json:"EMBEDDED_MIHOMO_CONTROLLER_PORT"`
+	EmbeddedMihomoSecret          string `json:"EMBEDDED_MIHOMO_SECRET"`
+	EmbeddedMihomoGroupName       string `json:"EMBEDDED_MIHOMO_GROUP_NAME"`
+	EmbeddedMihomoTestURL         string `json:"EMBEDDED_MIHOMO_TEST_URL"`
 }
 
 func loadConfig(configPath string) (Config, error) {
@@ -49,9 +65,17 @@ func loadConfig(configPath string) (Config, error) {
 	overrideString(&cfg.RequestTimeout, "REQUEST_TIMEOUT")
 	overrideCSV(&cfg.AuthTokens, "AUTH_TOKENS")
 	overrideCSV(&cfg.APIKeys, "API_KEYS")
+	overrideString(&cfg.ProxyBackendMode, "PROXY_BACKEND_MODE")
 	overrideString(&cfg.HTTPProxy, "HTTP_PROXY")
 	overrideString(&cfg.DataDir, "DATA_DIR")
 	overrideString(&cfg.AdminPassword, "ADMIN_PASSWORD")
+	overrideString(&cfg.EmbeddedMihomoSubscriptionURL, "EMBEDDED_MIHOMO_SUBSCRIPTION_URL")
+	overrideString(&cfg.EmbeddedMihomoBinaryPath, "EMBEDDED_MIHOMO_BINARY_PATH")
+	overrideInt(&cfg.EmbeddedMihomoMixedPort, "EMBEDDED_MIHOMO_MIXED_PORT")
+	overrideInt(&cfg.EmbeddedMihomoControllerPort, "EMBEDDED_MIHOMO_CONTROLLER_PORT")
+	overrideString(&cfg.EmbeddedMihomoSecret, "EMBEDDED_MIHOMO_SECRET")
+	overrideString(&cfg.EmbeddedMihomoGroupName, "EMBEDDED_MIHOMO_GROUP_NAME")
+	overrideString(&cfg.EmbeddedMihomoTestURL, "EMBEDDED_MIHOMO_TEST_URL")
 
 	listenAddr := resolveListenAddr(cfg.ListenAddr)
 
@@ -64,6 +88,10 @@ func loadConfig(configPath string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse request timeout: %w", err)
 	}
+	proxyBackendMode := strings.ToLower(strings.TrimSpace(cfg.ProxyBackendMode))
+	if proxyBackendMode == "" {
+		proxyBackendMode = proxyBackendHTTPProxy
+	}
 
 	finalCfg := Config{
 		ListenAddr:       listenAddr,
@@ -73,9 +101,17 @@ func loadConfig(configPath string) (Config, error) {
 		RequestTimeout:   requestTimeout,
 		UserAgent:        generateUserAgent(),
 		APIKeys:          dedupeStrings(cfg.APIKeys),
+		ProxyBackendMode: proxyBackendMode,
 		HTTPProxy:        strings.TrimSpace(cfg.HTTPProxy),
 		DataDir:          resolveDataDir(cfg.DataDir),
 		AdminPassword:    strings.TrimSpace(cfg.AdminPassword),
+		EmbeddedMihomoSubscriptionURL: strings.TrimSpace(cfg.EmbeddedMihomoSubscriptionURL),
+		EmbeddedMihomoBinaryPath:      strings.TrimSpace(cfg.EmbeddedMihomoBinaryPath),
+		EmbeddedMihomoMixedPort:       cfg.EmbeddedMihomoMixedPort,
+		EmbeddedMihomoControllerPort:  cfg.EmbeddedMihomoControllerPort,
+		EmbeddedMihomoSecret:          strings.TrimSpace(cfg.EmbeddedMihomoSecret),
+		EmbeddedMihomoGroupName:       strings.TrimSpace(cfg.EmbeddedMihomoGroupName),
+		EmbeddedMihomoTestURL:         strings.TrimSpace(cfg.EmbeddedMihomoTestURL),
 	}
 
 	switch {
@@ -85,10 +121,25 @@ func loadConfig(configPath string) (Config, error) {
 		return Config{}, errors.New("UPSTREAM_BASE_URL cannot be empty")
 	case finalCfg.AdminPassword == "" && len(finalCfg.AuthTokens) == 0:
 		return Config{}, errors.New("at least one AUTH_TOKENS is required when ADMIN_PASSWORD is not set")
+	case finalCfg.ProxyBackendMode != proxyBackendHTTPProxy && finalCfg.ProxyBackendMode != proxyBackendEmbeddedMihomo:
+		return Config{}, errors.New("PROXY_BACKEND_MODE must be http_proxy or embedded_mihomo")
 	case finalCfg.RotationInterval <= 0:
 		return Config{}, errors.New("ROTATION_INTERVAL must be greater than zero")
 	case finalCfg.RequestTimeout <= 0:
 		return Config{}, errors.New("REQUEST_TIMEOUT must be greater than zero")
+	case finalCfg.EmbeddedMihomoMixedPort <= 0:
+		return Config{}, errors.New("EMBEDDED_MIHOMO_MIXED_PORT must be greater than zero")
+	case finalCfg.EmbeddedMihomoControllerPort <= 0:
+		return Config{}, errors.New("EMBEDDED_MIHOMO_CONTROLLER_PORT must be greater than zero")
+	}
+	if finalCfg.EmbeddedMihomoSecret == "" {
+		finalCfg.EmbeddedMihomoSecret = "freebuff2api-mihomo"
+	}
+	if finalCfg.EmbeddedMihomoGroupName == "" {
+		finalCfg.EmbeddedMihomoGroupName = "节点选择"
+	}
+	if finalCfg.EmbeddedMihomoTestURL == "" {
+		finalCfg.EmbeddedMihomoTestURL = "https://www.gstatic.com/generate_204"
 	}
 
 
@@ -101,6 +152,12 @@ func loadRawConfig(configPath string) (rawConfig, error) {
 		UpstreamBaseURL:  "https://codebuff.com",
 		RotationInterval: "6h",
 		RequestTimeout:   "15m",
+		ProxyBackendMode: proxyBackendHTTPProxy,
+		EmbeddedMihomoMixedPort:      7897,
+		EmbeddedMihomoControllerPort: 9097,
+		EmbeddedMihomoSecret:         "freebuff2api-mihomo",
+		EmbeddedMihomoGroupName:      "节点选择",
+		EmbeddedMihomoTestURL:        "https://www.gstatic.com/generate_204",
 	}
 
 	if configPath != "" {
@@ -169,6 +226,16 @@ func overrideString(target *string, envName string) {
 	}
 }
 
+func overrideInt(target *int, envName string) {
+	value := strings.TrimSpace(os.Getenv(envName))
+	if value == "" {
+		return
+	}
+	if parsed, err := strconv.Atoi(value); err == nil {
+		*target = parsed
+	}
+}
+
 func overrideCSV(target *[]string, envName string) {
 	value := strings.TrimSpace(os.Getenv(envName))
 	if value == "" {
@@ -220,6 +287,10 @@ func containsString(values []string, needle string) bool {
 
 func generateUserAgent() string {
 	return "ai-sdk/openai-compatible/1.0.25/codebuff"
+}
+
+func (c Config) UsesEmbeddedMihomo() bool {
+	return c.ProxyBackendMode == proxyBackendEmbeddedMihomo
 }
 
 // generateClientSessionId generates a per-request session ID matching the

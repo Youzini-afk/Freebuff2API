@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -33,12 +32,25 @@ func main() {
 	if err != nil {
 		logger.Fatalf("load config: %v", err)
 	}
+	proxy, err := NewEmbeddedMihomoManager(cfg, logger)
+	if err != nil {
+		logger.Fatalf("init embedded mihomo manager: %v", err)
+	}
+	defer proxy.Close()
+	if cfg.UsesEmbeddedMihomo() {
+		if proxy.SubscriptionConfigured() {
+			if status, err := proxy.Start(); err != nil {
+				logger.Printf("embedded mihomo start failed: %v", err)
+			} else {
+				logger.Printf("embedded mihomo running at %s (group: %s, current: %s)", status.MixedProxyURL, status.CurrentGroup, status.CurrentProxy)
+			}
+		} else {
+			logger.Printf("embedded mihomo mode enabled but subscription is not configured yet")
+		}
+	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if cfg.HTTPProxy != "" {
-		importURL, _ := url.Parse(cfg.HTTPProxy)
-		transport.Proxy = http.ProxyURL(importURL)
-	}
+	transport.Proxy = buildProxyFunc(cfg, proxy)
 	httpClient := &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	
 	registry := NewModelRegistry(httpClient, logger)
@@ -60,7 +72,7 @@ func main() {
 	metrics.StartBackgroundFlush()
 	defer metrics.Close()
 
-	server := NewServer(cfg, logger, registry, metrics)
+	server := NewServer(cfg, logger, registry, metrics, proxy)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
 	server.runs.Reconcile(runCtx, store.List())
@@ -68,7 +80,7 @@ func main() {
 
 	var admin *AdminHandler
 	if strings.TrimSpace(cfg.AdminPassword) != "" {
-		admin, err = NewAdminHandler(cfg, logger, store, server.runs, metrics, webui.FS())
+		admin, err = NewAdminHandler(cfg, logger, store, server.runs, metrics, proxy, webui.FS())
 		if err != nil {
 			logger.Fatalf("init admin handler: %v", err)
 		}
