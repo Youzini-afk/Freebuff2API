@@ -86,6 +86,7 @@ func (a *AdminHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/proxy/groups", a.authed(a.handleProxyGroups))
 	mux.HandleFunc("/admin/api/proxy/select", a.authed(a.handleProxySelect))
 	mux.HandleFunc("/admin/api/proxy/probe", a.authed(a.handleProxyProbe))
+	mux.HandleFunc("/admin/api/proxy/upstream-probe", a.authed(a.handleProxyUpstreamProbe))
 	mux.HandleFunc("/admin/api/proxy/logs", a.authed(a.handleProxyLogs))
 }
 
@@ -433,6 +434,24 @@ func (a *AdminHandler) handleProxyProbe(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{"probe": probe, "proxy": a.proxy.Status()})
 }
 
+func (a *AdminHandler) handleProxyUpstreamProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
+	probe, err := a.runs.ProbeRoute(ctx)
+	response := map[string]any{
+		"probe": probe,
+		"proxy": a.proxy.Status(),
+	}
+	if err != nil {
+		response["error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (a *AdminHandler) handleProxyLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -637,9 +656,14 @@ func (a *AdminHandler) handleTokenRefresh(w http.ResponseWriter, r *http.Request
 		return
 	}
 	a.reconcileRuns()
+	if err := a.runs.PrewarmToken(id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"ok":    true,
-		"token": a.buildTokenView(record),
+		"ok":      true,
+		"message": "manual prewarm requested",
+		"token":   a.buildTokenView(record),
 	})
 }
 

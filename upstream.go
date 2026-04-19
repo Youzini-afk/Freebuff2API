@@ -19,6 +19,18 @@ type UpstreamClient struct {
 	userAgent  string
 	proxyMode  string
 	proxy      *EmbeddedMihomoManager
+	fallbackProxyURL string
+}
+
+type UpstreamRouteProbe struct {
+	At                string `json:"at"`
+	ProxyMode         string `json:"proxy_mode"`
+	EffectiveProxyURL string `json:"effective_proxy_url"`
+	UsingProxy        bool   `json:"using_proxy"`
+	IP                string `json:"ip"`
+	Loc               string `json:"loc"`
+	Blocked           bool   `json:"blocked"`
+	Error             string `json:"error,omitempty"`
 }
 
 func NewUpstreamClient(cfg Config, proxy *EmbeddedMihomoManager) *UpstreamClient {
@@ -34,6 +46,7 @@ func NewUpstreamClient(cfg Config, proxy *EmbeddedMihomoManager) *UpstreamClient
 		userAgent: cfg.UserAgent,
 		proxyMode: cfg.ProxyBackendMode,
 		proxy:     proxy,
+		fallbackProxyURL: strings.TrimSpace(cfg.HTTPProxy),
 	}
 }
 
@@ -53,6 +66,16 @@ func buildProxyFunc(cfg Config, proxy *EmbeddedMihomoManager) func(*http.Request
 	}
 }
 
+func (c *UpstreamClient) EffectiveProxyURL() string {
+	if c.proxyMode == proxyBackendEmbeddedMihomo {
+		if c.proxy == nil {
+			return ""
+		}
+		return strings.TrimSpace(c.proxy.ProxyURL())
+	}
+	return strings.TrimSpace(c.fallbackProxyURL)
+}
+
 func (c *UpstreamClient) do(req *http.Request) (*http.Response, error) {
 	if c.proxyMode == proxyBackendEmbeddedMihomo {
 		if c.proxy == nil {
@@ -70,6 +93,52 @@ func (c *UpstreamClient) do(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("send upstream request: %w", err)
 	}
 	return resp, nil
+}
+
+func (c *UpstreamClient) ProbeRoute(ctx context.Context) (UpstreamRouteProbe, error) {
+	probe := UpstreamRouteProbe{
+		At:                time.Now().UTC().Format(time.RFC3339),
+		ProxyMode:         c.proxyMode,
+		EffectiveProxyURL: c.EffectiveProxyURL(),
+	}
+	probe.UsingProxy = probe.EffectiveProxyURL != ""
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://cloudflare.com/cdn-cgi/trace", nil)
+	if err != nil {
+		probe.Error = err.Error()
+		return probe, fmt.Errorf("create upstream route probe request: %w", err)
+	}
+	req.Header.Set("Accept", "text/plain")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	resp, err := c.do(req)
+	if err != nil {
+		probe.Error = err.Error()
+		return probe, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		probe.Error = err.Error()
+		return probe, fmt.Errorf("read upstream route probe response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		probe.Error = fmt.Sprintf("probe status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return probe, fmt.Errorf(probe.Error)
+	}
+
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ip=") {
+			probe.IP = strings.TrimSpace(strings.TrimPrefix(line, "ip="))
+		}
+		if strings.HasPrefix(line, "loc=") {
+			probe.Loc = strings.TrimSpace(strings.TrimPrefix(line, "loc="))
+		}
+	}
+	probe.Blocked = probe.Loc == "CN" || probe.Loc == "HK"
+	return probe, nil
 }
 
 func (c *UpstreamClient) StartRun(ctx context.Context, authToken, agentID string) (string, error) {

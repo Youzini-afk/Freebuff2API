@@ -262,6 +262,7 @@
                       </div>
                     </td>
                     <td class="px-5 py-4 align-top text-right space-x-2 whitespace-nowrap">
+                      <button @click="refreshToken(t)" :disabled="prewarmBusyId === t.id || !t.enabled" class="btn btn-ghost px-3 py-1 rounded-md text-xs" x-text="prewarmBusyId === t.id ? '预热中...' : '手动预热'"></button>
                       <button @click="toggleToken(t)" class="btn btn-ghost px-3 py-1 rounded-md text-xs" x-text="t.enabled ? '禁用' : '启用'"></button>
                       <button @click="deleteToken(t)" class="btn btn-danger px-3 py-1 rounded-md text-xs">删除</button>
                     </td>
@@ -383,6 +384,7 @@
                   <button @click="proxyControl('restart')" :disabled="proxyBusy" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">重启</button>
                   <button @click="proxyControl('stop')" :disabled="proxyBusy" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">停止</button>
                   <button @click="probeProxyExit()" :disabled="probeBusy || !proxyStatus.running" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">测试出口</button>
+                  <button @click="probeUpstreamRoute()" :disabled="upstreamProbeBusy" class="btn btn-ghost px-4 py-2 rounded-lg text-sm" x-text="upstreamProbeBusy ? '检查中...' : '检查应用出口'"></button>
                   <button @click="refreshProxyLogs()" class="btn btn-ghost px-4 py-2 rounded-lg text-sm">刷新日志</button>
                 </div>
 
@@ -415,6 +417,8 @@
 
                 <div class="text-sm text-rose-400 break-all" x-show="proxyStatus.last_error" x-text="proxyStatus.last_error"></div>
                 <div class="text-xs text-slate-500" x-show="proxyStatus.last_probe_at" x-text="proxyProbeSummary()"></div>
+                <div class="text-xs text-slate-500 break-all" x-show="upstreamProbe" x-text="upstreamProbeSummary()"></div>
+                <div class="text-xs text-rose-400 break-all" x-show="upstreamProbe?.error" x-text="'应用出口检查失败：' + upstreamProbe.error"></div>
                 <div class="text-xs text-rose-400" x-show="proxyError" x-text="proxyError"></div>
 
                 <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -488,8 +492,11 @@ function adminApp() {
     proxyError: '',
     proxyBusy: false,
     probeBusy: false,
+    upstreamProbeBusy: false,
     proxySubscriptionDirty: false,
     proxyForm: { subscriptionUrl: '', groupName: '', proxyName: '' },
+    upstreamProbe: null,
+    prewarmBusyId: '',
 
     rangeMinutes: 60,
     rangeOptions: [
@@ -688,6 +695,15 @@ function adminApp() {
       return '最近出口探测：' + ip + ' / ' + loc + (this.proxyStatus.last_probe_blocked ? '（受限地区）' : '');
     },
 
+    upstreamProbeSummary() {
+      if (!this.upstreamProbe) return '';
+      const proxyMode = this.upstreamProbe.proxy_mode || 'unknown';
+      const route = this.upstreamProbe.using_proxy ? ('经代理 ' + (this.upstreamProbe.effective_proxy_url || 'unknown')) : '未使用代理';
+      const ip = this.upstreamProbe.ip || 'unknown';
+      const loc = this.upstreamProbe.loc || 'unknown';
+      return '应用实际出口：' + ip + ' / ' + loc + '，模式 ' + proxyMode + '，' + route + (this.upstreamProbe.blocked ? '（受限地区）' : '');
+    },
+
     async refreshProxyState() {
       await this.refreshAll(true);
       if (this.view === 'settings') {
@@ -797,6 +813,34 @@ function adminApp() {
       }
     },
 
+    async probeUpstreamRoute() {
+      this.upstreamProbeBusy = true;
+      this.proxyError = '';
+      try {
+        const res = await fetch('/admin/api/proxy/upstream-probe', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        this.upstreamProbe = data.probe || null;
+        this.proxyStatus = data.proxy || this.proxyStatus;
+        if (data.error) {
+          if (this.upstreamProbe) {
+            this.upstreamProbe.error = data.error;
+          }
+          this.proxyError = data.error;
+          this.toast('应用出口检查失败', 'error');
+          return;
+        }
+        this.toast(this.upstreamProbe && this.upstreamProbe.loc ? ('应用出口：' + this.upstreamProbe.loc) : '应用出口检查完成');
+      } catch (err) {
+        this.proxyError = String(err);
+        this.toast(String(err), 'error');
+      } finally {
+        this.upstreamProbeBusy = false;
+      }
+    },
+
     async refreshProxyLogs() {
       try {
         const res = await fetch('/admin/api/proxy/logs?limit=80', { credentials: 'same-origin' });
@@ -880,6 +924,28 @@ function adminApp() {
     async toggleToken(token) {
       await this.patchToken(token.id, { enabled: !token.enabled });
       this.toast(token.enabled ? '已禁用' : '已启用');
+    },
+
+    async refreshToken(token) {
+      if (!token || !token.id || !token.enabled) return;
+      this.prewarmBusyId = token.id;
+      try {
+        const res = await fetch('/admin/api/tokens/' + encodeURIComponent(token.id) + '/refresh', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.toast(data.error || '手动预热失败', 'error');
+          return;
+        }
+        await this.refreshAll(true);
+        this.toast(data.message || '已触发手动预热');
+      } catch (err) {
+        this.toast(String(err), 'error');
+      } finally {
+        this.prewarmBusyId = '';
+      }
     },
 
     async patchToken(id, body) {

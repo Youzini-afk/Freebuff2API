@@ -269,6 +269,25 @@ func (m *RunManager) AgentIDs() []string {
 	return out
 }
 
+func (m *RunManager) ProbeRoute(ctx context.Context) (UpstreamRouteProbe, error) {
+	return m.client.ProbeRoute(ctx)
+}
+
+func (m *RunManager) PrewarmToken(id string) error {
+	m.mu.RLock()
+	pool, ok := m.pools[id]
+	agentIDs := append([]string(nil), m.agentIDs...)
+	m.mu.RUnlock()
+	if !ok {
+		return errors.New("token not found")
+	}
+	if !pool.isEnabled() {
+		return errors.New("token is disabled")
+	}
+	pool.requestManualPrewarm(agentIDs)
+	return nil
+}
+
 // Reconcile adds missing pools, removes stale ones, and updates label /
 // enabled flags to match the provided desired state.
 func (m *RunManager) Reconcile(ctx context.Context, desired []ManagedToken) {
@@ -521,6 +540,26 @@ func (p *tokenPool) rotateAgent(ctx context.Context, agentID string) error {
 		}(oldRun)
 	}
 	return nil
+}
+
+func (p *tokenPool) requestManualPrewarm(agentIDs []string) {
+	p.mu.Lock()
+	p.cooldownUntil = time.Time{}
+	p.lastError = ""
+	p.mu.Unlock()
+
+	p.ensureSessionAsync("manual")
+	for _, agentID := range agentIDs {
+		go func(id string) {
+			startupCtx, cancel := context.WithTimeout(context.Background(), p.cfg.RequestTimeout)
+			defer cancel()
+			if err := p.rotateAgent(startupCtx, id); err != nil {
+				p.logger.Printf("%s: manual prewarm %s failed: %v", p.name, id, err)
+			} else {
+				p.logger.Printf("%s: manual prewarmed %s", p.name, id)
+			}
+		}(agentID)
+	}
 }
 
 func (p *tokenPool) release(run *managedRun) {
