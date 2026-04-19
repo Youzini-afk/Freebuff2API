@@ -444,6 +444,37 @@
           </div>
 
           <div class="card rounded-xl p-5 mt-6">
+            <div class="flex items-center gap-3 mb-4">
+              <div class="flex-1">
+                <div class="text-sm font-medium">模型列表</div>
+                <div class="text-xs text-slate-500 mt-1">手动同步 `/v1/models` 背后的上游 free-agents 源，确认当前是否仍在使用 fallback 模型集。</div>
+              </div>
+              <button @click="refreshModelRegistry()" :disabled="modelRegistryBusy" class="btn btn-ghost px-3 py-2 rounded-lg text-xs" x-text="modelRegistryBusy ? '刷新中...' : '手动刷新模型列表'"></button>
+            </div>
+
+            <template x-if="modelRegistry">
+              <div class="space-y-4">
+                <div class="flex flex-wrap gap-2 text-xs">
+                  <span class="tag" :class="modelRegistry.source === 'upstream' ? 'tag-ok' : 'tag-warn'" x-text="'来源：' + (modelRegistry.source || 'unknown')"></span>
+                  <span class="tag tag-mute" x-text="'模型数：' + formatNumber(modelRegistry.model_count || 0)"></span>
+                  <span class="tag tag-mute" x-text="'Agent 数：' + formatNumber(modelRegistry.agent_count || 0)"></span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                  <div>
+                    <div class="text-slate-500 text-xs">最近成功同步</div>
+                    <div x-text="modelRegistry.last_ok ? formatTime(modelRegistry.last_ok) : '—'"></div>
+                  </div>
+                  <div>
+                    <div class="text-slate-500 text-xs">当前状态更新时间</div>
+                    <div x-text="modelRegistry.updated_at ? formatTime(modelRegistry.updated_at) : '—'"></div>
+                  </div>
+                </div>
+                <div class="text-xs text-rose-400 break-all" x-show="modelRegistry.last_error" x-text="modelRegistry.last_error"></div>
+              </div>
+            </template>
+          </div>
+
+          <div class="card rounded-xl p-5 mt-6">
             <div class="text-sm font-medium mb-3">API 端点</div>
             <div class="space-y-2 text-sm font-mono">
               <div><span class="text-slate-500">GET </span>/healthz</div>
@@ -486,6 +517,8 @@ function adminApp() {
     tokens: [],
     series: [],
     config: null,
+    modelRegistry: null,
+    modelRegistryBusy: false,
     proxyStatus: null,
     proxyGroups: { running: false, selected_group: '', groups: [] },
     proxyLogs: [],
@@ -611,11 +644,12 @@ function adminApp() {
       if (!this.authenticated) return;
       if (!silent) this.loading = true;
       try {
-        const [ovRes, tkRes, mRes, cfgRes, proxyRes, proxyGroupsRes] = await Promise.all([
+        const [ovRes, tkRes, mRes, cfgRes, modelRegistryRes, proxyRes, proxyGroupsRes] = await Promise.all([
           fetch('/admin/api/overview', { credentials: 'same-origin' }),
           fetch('/admin/api/tokens', { credentials: 'same-origin' }),
           fetch('/admin/api/metrics?range=' + this.rangeMinutes, { credentials: 'same-origin' }),
           fetch('/admin/api/config', { credentials: 'same-origin' }),
+          fetch('/admin/api/models/status', { credentials: 'same-origin' }),
           fetch('/admin/api/proxy/status', { credentials: 'same-origin' }),
           fetch('/admin/api/proxy/groups', { credentials: 'same-origin' }),
         ]);
@@ -626,6 +660,8 @@ function adminApp() {
         const m = await mRes.json();
         this.series = m.series || [];
         this.config = await cfgRes.json();
+        const modelRegistryData = await modelRegistryRes.json().catch(() => ({}));
+        this.modelRegistry = modelRegistryData.registry || modelRegistryData;
         const proxyData = await proxyRes.json().catch(() => ({}));
         this.proxyStatus = proxyData.proxy || proxyData;
         const proxyGroupsData = await proxyGroupsRes.json().catch(() => ({ running: false, selected_group: '', groups: [] }));
@@ -711,6 +747,27 @@ function adminApp() {
       }
     },
 
+    async refreshModelRegistry() {
+      this.modelRegistryBusy = true;
+      try {
+        const res = await fetch('/admin/api/models/refresh', {
+          method: 'POST',
+          credentials: 'same-origin',
+        });
+        const data = await res.json().catch(() => ({}));
+        this.modelRegistry = data.registry || this.modelRegistry;
+        if (!res.ok) {
+          this.toast(data.error || '模型列表刷新失败', 'error');
+          return;
+        }
+        this.toast('模型列表已刷新，共 ' + formatNumber(this.modelRegistry?.model_count || 0) + ' 个模型');
+      } catch (err) {
+        this.toast(String(err), 'error');
+      } finally {
+        this.modelRegistryBusy = false;
+      }
+    },
+
     async proxyControl(action) {
       this.proxyBusy = true;
       this.proxyError = '';
@@ -752,6 +809,10 @@ function adminApp() {
         }
         this.proxySubscriptionDirty = false;
         this.proxyStatus = data.proxy || this.proxyStatus;
+        this.proxyGroups = { running: !!this.proxyStatus?.running, selected_group: '', groups: [] };
+        this.proxyForm.groupName = '';
+        this.proxyForm.proxyName = '';
+        this.upstreamProbe = null;
         await this.refreshAll(true);
         await this.refreshProxyLogs();
         this.toast('订阅地址已保存');

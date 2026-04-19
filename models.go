@@ -38,14 +38,27 @@ type ModelRegistry struct {
 	client *http.Client
 	logger *log.Logger
 
+	refreshMu sync.Mutex
 	mu           sync.RWMutex
 	agentModels  map[string][]string // agentID → []model
 	modelToAgent map[string]string   // model → chosen agentID
 	allModels    []string            // deduplicated, sorted
 	lastOK       time.Time
+	updatedAt    time.Time
+	source       string
+	lastError    string
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+}
+
+type ModelRegistryStatus struct {
+	ModelCount int    `json:"model_count"`
+	AgentCount int    `json:"agent_count"`
+	Source     string `json:"source"`
+	LastOK     string `json:"last_ok"`
+	UpdatedAt  string `json:"updated_at"`
+	LastError  string `json:"last_error,omitempty"`
 }
 
 func NewModelRegistry(client *http.Client, logger *log.Logger) *ModelRegistry {
@@ -59,7 +72,7 @@ func NewModelRegistry(client *http.Client, logger *log.Logger) *ModelRegistry {
 }
 
 func (r *ModelRegistry) Start(ctx context.Context) {
-	if err := r.refresh(ctx); err != nil {
+	if _, err := r.RefreshNow(ctx); err != nil {
 		r.logger.Printf("model registry: initial fetch failed, loading hardcoded fallback: %v", err)
 		r.loadFallback()
 	}
@@ -73,7 +86,7 @@ func (r *ModelRegistry) Start(ctx context.Context) {
 			select {
 			case <-ticker.C:
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				if err := r.refresh(ctx); err != nil {
+				if _, err := r.RefreshNow(ctx); err != nil {
 					r.logger.Printf("model registry: refresh failed: %v", err)
 				}
 				cancel()
@@ -87,6 +100,36 @@ func (r *ModelRegistry) Start(ctx context.Context) {
 func (r *ModelRegistry) Stop() {
 	close(r.stopCh)
 	r.wg.Wait()
+}
+
+func (r *ModelRegistry) Status() ModelRegistryStatus {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	status := ModelRegistryStatus{
+		ModelCount: len(r.allModels),
+		AgentCount: len(r.agentModels),
+		Source:     r.source,
+		LastError:  r.lastError,
+	}
+	if !r.lastOK.IsZero() {
+		status.LastOK = r.lastOK.UTC().Format(time.RFC3339)
+	}
+	if !r.updatedAt.IsZero() {
+		status.UpdatedAt = r.updatedAt.UTC().Format(time.RFC3339)
+	}
+	return status
+}
+
+func (r *ModelRegistry) RefreshNow(ctx context.Context) (ModelRegistryStatus, error) {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	if err := r.refresh(ctx); err != nil {
+		r.mu.Lock()
+		r.lastError = err.Error()
+		r.mu.Unlock()
+		return r.Status(), err
+	}
+	return r.Status(), nil
 }
 
 // Models returns the deduplicated list of all available model names.
@@ -159,6 +202,9 @@ func (r *ModelRegistry) refresh(ctx context.Context) error {
 	r.modelToAgent = modelToAgent
 	r.allModels = allModels
 	r.lastOK = time.Now()
+	r.updatedAt = r.lastOK
+	r.source = "upstream"
+	r.lastError = ""
 	r.mu.Unlock()
 
 	r.logger.Printf("model registry: updated %d agents, %d models: %v", len(all), len(allModels), allModels)
@@ -172,6 +218,8 @@ func (r *ModelRegistry) loadFallback() {
 	r.agentModels = hardcodedFallback
 	r.modelToAgent = modelToAgent
 	r.allModels = allModels
+	r.updatedAt = time.Now()
+	r.source = "fallback"
 	r.mu.Unlock()
 
 	r.logger.Printf("model registry: loaded fallback models: %v", allModels)

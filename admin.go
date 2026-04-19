@@ -29,6 +29,7 @@ type AdminHandler struct {
 	logger   *log.Logger
 	store    *TokenStore
 	runs     *RunManager
+	registry *ModelRegistry
 	metrics  *Metrics
 	proxy    *EmbeddedMihomoManager
 	staticFS fs.FS
@@ -38,7 +39,7 @@ type AdminHandler struct {
 
 // NewAdminHandler returns an initialised admin handler. staticFS may be nil
 // when the WebUI is not bundled (the API endpoints remain usable).
-func NewAdminHandler(cfg Config, logger *log.Logger, store *TokenStore, runs *RunManager, metrics *Metrics, proxy *EmbeddedMihomoManager, staticFS fs.FS) (*AdminHandler, error) {
+func NewAdminHandler(cfg Config, logger *log.Logger, store *TokenStore, runs *RunManager, registry *ModelRegistry, metrics *Metrics, proxy *EmbeddedMihomoManager, staticFS fs.FS) (*AdminHandler, error) {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("generate admin session key: %w", err)
@@ -48,6 +49,7 @@ func NewAdminHandler(cfg Config, logger *log.Logger, store *TokenStore, runs *Ru
 		logger:   logger,
 		store:    store,
 		runs:     runs,
+		registry: registry,
 		metrics:  metrics,
 		proxy:    proxy,
 		staticFS: staticFS,
@@ -78,6 +80,8 @@ func (a *AdminHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/metrics", a.authed(a.handleMetrics))
 	mux.HandleFunc("/admin/api/metrics/token/", a.authed(a.handleMetricsForToken))
 	mux.HandleFunc("/admin/api/config", a.authed(a.handleConfigSummary))
+	mux.HandleFunc("/admin/api/models/status", a.authed(a.handleModelRegistryStatus))
+	mux.HandleFunc("/admin/api/models/refresh", a.authed(a.handleModelRegistryRefresh))
 	mux.HandleFunc("/admin/api/proxy/status", a.authed(a.handleProxyStatus))
 	mux.HandleFunc("/admin/api/proxy/start", a.authed(a.handleProxyStart))
 	mux.HandleFunc("/admin/api/proxy/stop", a.authed(a.handleProxyStop))
@@ -308,6 +312,31 @@ func (a *AdminHandler) handleConfigSummary(w http.ResponseWriter, r *http.Reques
 		"embedded_mihomo_group_name": a.cfg.EmbeddedMihomoGroupName,
 		"embedded_mihomo_binary_path_set": strings.TrimSpace(a.cfg.EmbeddedMihomoBinaryPath) != "",
 	})
+}
+
+func (a *AdminHandler) handleModelRegistryStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"registry": a.registry.Status()})
+}
+
+func (a *AdminHandler) handleModelRegistryRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	status, err := a.registry.RefreshNow(ctx)
+	response := map[string]any{"registry": status}
+	if err != nil {
+		response["error"] = err.Error()
+		writeJSON(w, http.StatusBadGateway, response)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (a *AdminHandler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {

@@ -80,7 +80,7 @@ func main() {
 
 	var admin *AdminHandler
 	if strings.TrimSpace(cfg.AdminPassword) != "" {
-		admin, err = NewAdminHandler(cfg, logger, store, server.runs, metrics, proxy, webui.FS())
+		admin, err = NewAdminHandler(cfg, logger, store, server.runs, registry, metrics, proxy, webui.FS())
 		if err != nil {
 			logger.Fatalf("init admin handler: %v", err)
 		}

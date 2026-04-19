@@ -97,6 +97,7 @@ type EmbeddedMihomoManager struct {
 	logFile  *os.File
 	stopping bool
 	state    EmbeddedMihomoState
+	providerRefreshPending bool
 }
 
 func NewEmbeddedMihomoManager(cfg Config, logger *log.Logger) (*EmbeddedMihomoManager, error) {
@@ -135,6 +136,30 @@ func (m *EmbeddedMihomoManager) saveStateLocked() {
 		return
 	}
 	_ = os.WriteFile(m.statePath, data, 0o600)
+}
+
+func (m *EmbeddedMihomoManager) providerPath() string {
+	return filepath.Join(m.providersDir, "primary.yaml")
+}
+
+func (m *EmbeddedMihomoManager) resetSelectionStateLocked() {
+	m.state.CurrentGroup = ""
+	m.state.CurrentProxy = ""
+	m.state.LastProbeAt = ""
+	m.state.LastProbeIP = ""
+	m.state.LastProbeLoc = ""
+	m.state.LastProbeError = ""
+	m.state.LastProbeBlocked = false
+}
+
+func (m *EmbeddedMihomoManager) clearProviderCacheLocked() error {
+	if err := os.RemoveAll(m.providersDir); err != nil {
+		return fmt.Errorf("clear mihomo provider cache: %w", err)
+	}
+	if err := os.MkdirAll(m.providersDir, 0o755); err != nil {
+		return fmt.Errorf("recreate mihomo providers dir: %w", err)
+	}
+	return nil
 }
 
 func (m *EmbeddedMihomoManager) currentSubscriptionLocked() string {
@@ -236,15 +261,13 @@ func (m *EmbeddedMihomoManager) Status() EmbeddedMihomoStatus {
 	if running {
 		if groups, err := m.Groups(); err == nil {
 			status.GroupsCount = len(groups.Groups)
-			if status.CurrentGroup == "" {
+			if groups.SelectedGroup != "" {
 				status.CurrentGroup = groups.SelectedGroup
 			}
-			if status.CurrentProxy == "" {
-				for _, group := range groups.Groups {
-					if group.Name == status.CurrentGroup {
-						status.CurrentProxy = group.Now
-						break
-					}
+			for _, group := range groups.Groups {
+				if group.Name == status.CurrentGroup {
+					status.CurrentProxy = group.Now
+					break
 				}
 			}
 		}
@@ -253,7 +276,7 @@ func (m *EmbeddedMihomoManager) Status() EmbeddedMihomoStatus {
 }
 
 func (m *EmbeddedMihomoManager) writeConfigLocked(subscriptionURL string) error {
-	providerPath := filepath.ToSlash(filepath.Join(m.providersDir, "primary.yaml"))
+	providerPath := filepath.ToSlash(m.providerPath())
 	content := strings.Join([]string{
 		"mixed-port: " + strconv.Itoa(m.cfg.EmbeddedMihomoMixedPort),
 		"allow-lan: false",
@@ -340,6 +363,39 @@ func (m *EmbeddedMihomoManager) waitUntilReady(timeout time.Duration) error {
 	return fmt.Errorf(lastErr)
 }
 
+func (m *EmbeddedMihomoManager) waitUntilProviderReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	lastErr := ""
+	for time.Now().Before(deadline) {
+		info, err := os.Stat(m.providerPath())
+		if err == nil && !info.IsDir() && info.Size() > 0 {
+			groups, groupErr := m.Groups()
+			if groupErr == nil {
+				for _, group := range groups.Groups {
+					if group.Name == m.cfg.EmbeddedMihomoGroupName {
+						if len(group.All) > 2 {
+							return nil
+						}
+						lastErr = "provider nodes are not ready yet"
+						break
+					}
+				}
+			} else {
+				lastErr = groupErr.Error()
+			}
+		} else if err != nil {
+			lastErr = err.Error()
+		} else {
+			lastErr = "provider cache is empty"
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if lastErr == "" {
+		lastErr = "mihomo provider refresh timeout"
+	}
+	return fmt.Errorf(lastErr)
+}
+
 func (m *EmbeddedMihomoManager) Start() (EmbeddedMihomoStatus, error) {
 	m.mu.Lock()
 	if m.exitCh != nil && m.cmd != nil && m.cmd.Process != nil {
@@ -359,6 +415,15 @@ func (m *EmbeddedMihomoManager) Start() (EmbeddedMihomoStatus, error) {
 		m.saveStateLocked()
 		m.mu.Unlock()
 		return m.Status(), fmt.Errorf("mihomo binary not found")
+	}
+	refreshProvider := m.providerRefreshPending
+	if refreshProvider {
+		if err := m.clearProviderCacheLocked(); err != nil {
+			m.state.LastError = err.Error()
+			m.saveStateLocked()
+			m.mu.Unlock()
+			return m.Status(), err
+		}
 	}
 	if err := m.writeConfigLocked(subscriptionURL); err != nil {
 		m.state.LastError = err.Error()
@@ -384,13 +449,14 @@ func (m *EmbeddedMihomoManager) Start() (EmbeddedMihomoStatus, error) {
 		m.mu.Unlock()
 		return m.Status(), fmt.Errorf("start mihomo: %w", err)
 	}
+	startedAt := time.Now().UTC()
 	exitCh := make(chan struct{})
 	m.cmd = cmd
 	m.exitCh = exitCh
 	m.logFile = logFile
 	m.stopping = false
 	m.state.LastError = ""
-	m.state.LastStartedAt = time.Now().UTC().Format(time.RFC3339)
+	m.state.LastStartedAt = startedAt.Format(time.RFC3339)
 	m.saveStateLocked()
 	go m.waitLoop(cmd, logFile, exitCh)
 	groupName := m.state.CurrentGroup
@@ -403,6 +469,20 @@ func (m *EmbeddedMihomoManager) Start() (EmbeddedMihomoStatus, error) {
 		m.saveStateLocked()
 		m.mu.Unlock()
 		return m.Status(), err
+	}
+	if refreshProvider {
+		if err := m.waitUntilProviderReady(20 * time.Second); err != nil {
+			_, _ = m.Stop()
+			m.mu.Lock()
+			m.state.LastError = err.Error()
+			m.saveStateLocked()
+			m.mu.Unlock()
+			return m.Status(), err
+		}
+		m.mu.Lock()
+		m.providerRefreshPending = false
+		m.saveStateLocked()
+		m.mu.Unlock()
 	}
 	if groupName != "" && proxyName != "" {
 		_, _ = m.SelectProxy(groupName, proxyName)
@@ -455,9 +535,22 @@ func (m *EmbeddedMihomoManager) UpdateSubscription(subscriptionURL string, resta
 		return m.Status(), fmt.Errorf("subscription url must start with http:// or https://")
 	}
 	m.mu.Lock()
+	changed := subscriptionURL != m.currentSubscriptionLocked()
 	m.state.SubscriptionURL = subscriptionURL
 	m.state.LastUpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	m.state.LastError = ""
+	if changed {
+		m.providerRefreshPending = true
+		m.resetSelectionStateLocked()
+		if m.exitCh == nil || m.cmd == nil || m.cmd.Process == nil {
+			if err := m.clearProviderCacheLocked(); err != nil {
+				m.state.LastError = err.Error()
+				m.saveStateLocked()
+				m.mu.Unlock()
+				return m.Status(), err
+			}
+		}
+	}
 	m.saveStateLocked()
 	running := m.exitCh != nil && m.cmd != nil && m.cmd.Process != nil
 	m.mu.Unlock()
