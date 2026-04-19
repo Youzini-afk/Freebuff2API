@@ -21,6 +21,8 @@ type Config struct {
 	UserAgent        string
 	APIKeys          []string
 	HTTPProxy        string
+	DataDir          string
+	AdminPassword    string
 }
 
 type rawConfig struct {
@@ -31,6 +33,8 @@ type rawConfig struct {
 	RequestTimeout   string   `json:"REQUEST_TIMEOUT"`
 	APIKeys          []string `json:"API_KEYS"`
 	HTTPProxy        string   `json:"HTTP_PROXY"`
+	DataDir          string   `json:"DATA_DIR"`
+	AdminPassword    string   `json:"ADMIN_PASSWORD"`
 }
 
 func loadConfig(configPath string) (Config, error) {
@@ -46,6 +50,8 @@ func loadConfig(configPath string) (Config, error) {
 	overrideCSV(&cfg.AuthTokens, "AUTH_TOKENS")
 	overrideCSV(&cfg.APIKeys, "API_KEYS")
 	overrideString(&cfg.HTTPProxy, "HTTP_PROXY")
+	overrideString(&cfg.DataDir, "DATA_DIR")
+	overrideString(&cfg.AdminPassword, "ADMIN_PASSWORD")
 
 	listenAddr := resolveListenAddr(cfg.ListenAddr)
 
@@ -68,6 +74,8 @@ func loadConfig(configPath string) (Config, error) {
 		UserAgent:        generateUserAgent(),
 		APIKeys:          dedupeStrings(cfg.APIKeys),
 		HTTPProxy:        strings.TrimSpace(cfg.HTTPProxy),
+		DataDir:          resolveDataDir(cfg.DataDir),
+		AdminPassword:    strings.TrimSpace(cfg.AdminPassword),
 	}
 
 	switch {
@@ -75,8 +83,8 @@ func loadConfig(configPath string) (Config, error) {
 		return Config{}, errors.New("LISTEN_ADDR cannot be empty")
 	case finalCfg.UpstreamBaseURL == "":
 		return Config{}, errors.New("UPSTREAM_BASE_URL cannot be empty")
-	case len(finalCfg.AuthTokens) == 0:
-		return Config{}, errors.New("at least one AUTH_TOKENS is required")
+	case finalCfg.AdminPassword == "" && len(finalCfg.AuthTokens) == 0:
+		return Config{}, errors.New("at least one AUTH_TOKENS is required when ADMIN_PASSWORD is not set")
 	case finalCfg.RotationInterval <= 0:
 		return Config{}, errors.New("ROTATION_INTERVAL must be greater than zero")
 	case finalCfg.RequestTimeout <= 0:
@@ -127,6 +135,20 @@ func resolveListenAddr(value string) string {
 	}
 
 	return ":8080"
+}
+
+// resolveDataDir returns the on-disk directory used for persisted admin
+// state. It defaults to /data when present or creatable (typical for
+// container mounts), otherwise ./data relative to the working directory.
+func resolveDataDir(value string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	if info, err := os.Stat("/data"); err == nil && info.IsDir() {
+		return "/data"
+	}
+	return "data"
 }
 
 func normalizeListenAddr(value string) string {

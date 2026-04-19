@@ -8,8 +8,12 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+
+	"github.com/Quorinex/Freebuff2API/webui"
 )
 
 func main() {
@@ -41,14 +45,41 @@ func main() {
 	registry.Start(context.Background())
 	defer registry.Stop()
 
-	server := NewServer(cfg, logger, registry)
+	storePath := filepath.Join(cfg.DataDir, "tokens.json")
+	store, err := NewTokenStore(storePath, cfg.AuthTokens)
+	if err != nil {
+		logger.Fatalf("init token store: %v", err)
+	}
+	logger.Printf("token store: %d managed tokens (file: %s)", len(store.List()), storePath)
+
+	metricsPath := filepath.Join(cfg.DataDir, "metrics.json")
+	metrics, err := NewMetrics(metricsPath)
+	if err != nil {
+		logger.Fatalf("init metrics: %v", err)
+	}
+	metrics.StartBackgroundFlush()
+	defer metrics.Close()
+
+	server := NewServer(cfg, logger, registry, metrics)
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
+	server.runs.Reconcile(runCtx, store.List())
 	server.Start(runCtx)
+
+	var admin *AdminHandler
+	if strings.TrimSpace(cfg.AdminPassword) != "" {
+		admin, err = NewAdminHandler(cfg, logger, store, server.runs, metrics, webui.FS())
+		if err != nil {
+			logger.Fatalf("init admin handler: %v", err)
+		}
+		logger.Printf("admin WebUI enabled at /admin (data dir: %s)", cfg.DataDir)
+	} else {
+		logger.Printf("admin WebUI disabled (set ADMIN_PASSWORD to enable)")
+	}
 
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           server.Handler(),
+		Handler:           server.Handler(admin),
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 

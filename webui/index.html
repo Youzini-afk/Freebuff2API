@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Freebuff2API Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.7/dist/cdn.min.js"></script>
+  <style>
+    html, body { background-color: #0b1120; color: #e2e8f0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .card { background-color: #111827; border: 1px solid #1f2937; }
+    .input { background-color: #0f172a; border: 1px solid #1f2937; color: #e2e8f0; }
+    .input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.25); }
+    .btn { transition: all 150ms ease; }
+    .btn-primary { background-color: #2563eb; color: white; }
+    .btn-primary:hover { background-color: #1d4ed8; }
+    .btn-danger { background-color: #dc2626; color: white; }
+    .btn-danger:hover { background-color: #b91c1c; }
+    .btn-ghost { background-color: transparent; color: #cbd5e1; border: 1px solid #1f2937; }
+    .btn-ghost:hover { background-color: #1f2937; }
+    .tag { padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
+    .tag-ok { background-color: rgba(34,197,94,0.15); color: #4ade80; }
+    .tag-warn { background-color: rgba(250,204,21,0.15); color: #facc15; }
+    .tag-err { background-color: rgba(239,68,68,0.15); color: #f87171; }
+    .tag-mute { background-color: rgba(148,163,184,0.15); color: #cbd5e1; }
+    .nav-item { transition: all 120ms ease; }
+    .nav-item.active { background-color: #1f2937; color: #fff; }
+    .nav-item:not(.active):hover { background-color: rgba(31,41,55,0.5); }
+    .spinner { border: 2px solid rgba(148,163,184,0.3); border-top-color: #3b82f6; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #0b1120; }
+    ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #374151; }
+  </style>
+</head>
+<body>
+<div x-data="adminApp()" x-init="boot()" class="min-h-screen">
+  <!-- Login view -->
+  <template x-if="!authenticated && ready">
+    <div class="min-h-screen flex items-center justify-center p-6">
+      <div class="card rounded-xl shadow-2xl w-full max-w-md p-8">
+        <div class="flex items-center gap-3 mb-6">
+          <div class="w-10 h-10 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white">F</div>
+          <div>
+            <h1 class="text-lg font-semibold">Freebuff2API</h1>
+            <p class="text-xs text-slate-400">Admin Console</p>
+          </div>
+        </div>
+        <form @submit.prevent="login">
+          <label class="block text-sm text-slate-300 mb-2">管理员密码</label>
+          <input type="password" x-model="loginPassword" autofocus required class="input w-full px-3 py-2 rounded-lg" placeholder="ADMIN_PASSWORD" />
+          <template x-if="loginError">
+            <p class="text-red-400 text-sm mt-3" x-text="loginError"></p>
+          </template>
+          <button type="submit" :disabled="loginBusy" class="btn btn-primary w-full mt-6 px-4 py-2 rounded-lg font-medium flex items-center justify-center gap-2">
+            <template x-if="loginBusy"><span class="spinner"></span></template>
+            <span x-text="loginBusy ? '登录中…' : '登录'"></span>
+          </button>
+        </form>
+        <p class="text-xs text-slate-500 mt-6 leading-relaxed">
+          通过 <code class="text-slate-300">ADMIN_PASSWORD</code> 环境变量配置密码。会话 Cookie 仅在 <code class="text-slate-300">/admin</code> 路径下有效，重启服务后需要重新登录。
+        </p>
+      </div>
+    </div>
+  </template>
+
+  <!-- App shell -->
+  <template x-if="authenticated && ready">
+    <div class="flex min-h-screen">
+      <!-- Sidebar -->
+      <aside class="w-60 border-r border-slate-800 flex flex-col">
+        <div class="px-5 py-5 border-b border-slate-800 flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-white">F</div>
+          <div>
+            <div class="font-semibold text-sm">Freebuff2API</div>
+            <div class="text-xs text-slate-500">Admin</div>
+          </div>
+        </div>
+        <nav class="flex-1 px-3 py-4 space-y-1 text-sm">
+          <button @click="view='dashboard'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='dashboard' ? 'active' : ''">
+            <span>概览</span>
+          </button>
+          <button @click="view='tokens'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='tokens' ? 'active' : ''">
+            <span>Tokens</span>
+            <span class="ml-auto tag tag-mute" x-text="tokens.length"></span>
+          </button>
+          <button @click="view='traffic'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='traffic' ? 'active' : ''">
+            <span>流量统计</span>
+          </button>
+          <button @click="view='settings'" class="nav-item w-full text-left px-3 py-2 rounded-lg flex items-center gap-3" :class="view==='settings' ? 'active' : ''">
+            <span>设置</span>
+          </button>
+        </nav>
+        <div class="px-3 py-4 border-t border-slate-800">
+          <button @click="logout" class="btn btn-ghost w-full px-3 py-2 rounded-lg text-sm">退出登录</button>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="flex-1 p-8 max-w-6xl">
+        <!-- Top status -->
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-semibold" x-text="viewTitle()"></h2>
+          <div class="flex items-center gap-3 text-xs text-slate-400">
+            <span x-show="lastRefreshedAt">更新于 <span x-text="formatRelative(lastRefreshedAt)"></span></span>
+            <button @click="refreshAll()" class="btn btn-ghost px-3 py-1.5 rounded-lg flex items-center gap-2">
+              <template x-if="loading"><span class="spinner"></span></template>
+              <span>刷新</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Dashboard -->
+        <section x-show="view==='dashboard'" x-cloak>
+          <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="card rounded-xl p-5">
+              <div class="text-xs text-slate-400 mb-1">累计请求</div>
+              <div class="text-2xl font-semibold" x-text="formatNumber(overview.totals?.total)"></div>
+              <div class="text-xs text-slate-500 mt-2">成功 <span class="text-emerald-400" x-text="formatNumber(overview.totals?.success)"></span> · 失败 <span class="text-rose-400" x-text="formatNumber(overview.totals?.errors)"></span></div>
+            </div>
+            <div class="card rounded-xl p-5">
+              <div class="text-xs text-slate-400 mb-1">最近 1 分钟</div>
+              <div class="text-2xl font-semibold" x-text="formatNumber(overview.totals?.last_1m_total)"></div>
+              <div class="text-xs text-slate-500 mt-2">5m <span x-text="formatNumber(overview.totals?.last_5m_total)"></span> · 1h <span x-text="formatNumber(overview.totals?.last_1h_total)"></span></div>
+            </div>
+            <div class="card rounded-xl p-5">
+              <div class="text-xs text-slate-400 mb-1">Token 状态</div>
+              <div class="text-2xl font-semibold">
+                <span class="text-emerald-400" x-text="overview.ready_tokens ?? 0"></span>
+                <span class="text-slate-500 text-sm">/ </span>
+                <span x-text="overview.enabled_tokens ?? 0"></span>
+              </div>
+              <div class="text-xs text-slate-500 mt-2">就绪 / 启用数 · 共 <span x-text="overview.token_count ?? 0"></span> 个</div>
+            </div>
+            <div class="card rounded-xl p-5">
+              <div class="text-xs text-slate-400 mb-1">平均延迟</div>
+              <div class="text-2xl font-semibold" x-text="formatLatency(overview.totals?.avg_latency_ms)"></div>
+              <div class="text-xs text-slate-500 mt-2">基于全部成功/失败请求</div>
+            </div>
+          </div>
+
+          <div class="card rounded-xl p-5 mt-6">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <div class="text-sm font-medium">整体流量</div>
+                <div class="text-xs text-slate-500">每分钟请求数</div>
+              </div>
+              <div class="flex items-center gap-1 text-xs">
+                <template x-for="opt in rangeOptions" :key="opt.value">
+                  <button @click="setRange(opt.value)" class="px-3 py-1 rounded-md" :class="rangeMinutes===opt.value ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'" x-text="opt.label"></button>
+                </template>
+              </div>
+            </div>
+            <canvas id="dashboardChart" height="120"></canvas>
+          </div>
+
+          <div class="card rounded-xl p-5 mt-6">
+            <div class="text-sm font-medium mb-4">Token 健康度</div>
+            <div class="space-y-3" x-show="tokens.length > 0">
+              <template x-for="t in tokens" :key="t.id">
+                <div class="flex items-center gap-4 text-sm">
+                  <span class="w-2 h-2 rounded-full" :class="healthDotClass(t)"></span>
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium truncate" x-text="t.label || t.id"></div>
+                    <div class="text-xs text-slate-500" x-text="healthDescription(t)"></div>
+                  </div>
+                  <div class="text-xs text-slate-400 tabular-nums">
+                    <span x-text="formatNumber(t.stats?.total)"></span> 请求
+                  </div>
+                </div>
+              </template>
+            </div>
+            <div class="text-slate-500 text-sm" x-show="tokens.length === 0">
+              还没有 token，请到 <button class="text-blue-400 hover:underline" @click="view='tokens'">Tokens</button> 页面添加。
+            </div>
+          </div>
+        </section>
+
+        <!-- Tokens -->
+        <section x-show="view==='tokens'" x-cloak>
+          <div class="card rounded-xl p-5">
+            <div class="flex items-center gap-3 mb-4">
+              <div class="flex-1">
+                <div class="text-sm font-medium mb-1">添加 Token</div>
+                <div class="text-xs text-slate-500">Token 仅用于本机代理请求上游，添加后立即启用。</div>
+              </div>
+            </div>
+            <form @submit.prevent="createToken" class="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <input type="text" x-model="newToken.label" placeholder="标签（可选）" class="input px-3 py-2 rounded-lg md:col-span-1" />
+              <input type="password" x-model="newToken.token" required placeholder="auth token" class="input px-3 py-2 rounded-lg md:col-span-2 font-mono text-sm" />
+              <button type="submit" :disabled="createBusy" class="btn btn-primary px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2">
+                <template x-if="createBusy"><span class="spinner"></span></template>
+                <span>添加</span>
+              </button>
+            </form>
+            <p class="text-red-400 text-xs mt-3" x-show="createError" x-text="createError"></p>
+          </div>
+
+          <div class="card rounded-xl mt-6 overflow-hidden">
+            <table class="w-full text-sm">
+              <thead class="bg-slate-900/60 text-xs uppercase text-slate-400">
+                <tr>
+                  <th class="text-left px-5 py-3">标签 / ID</th>
+                  <th class="text-left px-5 py-3">Token</th>
+                  <th class="text-left px-5 py-3">会话状态</th>
+                  <th class="text-right px-5 py-3">累计请求</th>
+                  <th class="text-right px-5 py-3">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="t in tokens" :key="t.id">
+                  <tr class="border-t border-slate-800">
+                    <td class="px-5 py-4 align-top">
+                      <input type="text" :value="t.label" @change="updateLabel(t, $event.target.value)" class="input px-2 py-1 rounded w-40 font-medium" />
+                      <div class="text-xs text-slate-500 mt-1 font-mono" x-text="t.id"></div>
+                    </td>
+                    <td class="px-5 py-4 align-top">
+                      <code class="text-xs text-slate-300 font-mono" x-text="t.token_masked"></code>
+                    </td>
+                    <td class="px-5 py-4 align-top">
+                      <span class="tag" :class="sessionTagClass(t)" x-text="sessionLabel(t)"></span>
+                      <div class="text-xs text-slate-500 mt-1" x-show="t.pool?.last_error" x-text="t.pool?.last_error"></div>
+                      <div class="text-xs text-slate-500 mt-1" x-show="t.pool?.session_expires_at" x-text="t.pool?.session_expires_at ? '到期 ' + formatTime(t.pool.session_expires_at) : ''"></div>
+                    </td>
+                    <td class="px-5 py-4 align-top text-right tabular-nums">
+                      <div class="font-medium" x-text="formatNumber(t.stats?.total)"></div>
+                      <div class="text-xs text-slate-500">
+                        成功 <span class="text-emerald-400" x-text="formatNumber(t.stats?.success)"></span>
+                        / 失败 <span class="text-rose-400" x-text="formatNumber(t.stats?.errors)"></span>
+                      </div>
+                      <div class="text-xs text-slate-500" x-show="t.stats?.avg_latency_ms">
+                        avg <span x-text="formatLatency(t.stats.avg_latency_ms)"></span>
+                      </div>
+                    </td>
+                    <td class="px-5 py-4 align-top text-right space-x-2 whitespace-nowrap">
+                      <button @click="toggleToken(t)" class="btn btn-ghost px-3 py-1 rounded-md text-xs" x-text="t.enabled ? '禁用' : '启用'"></button>
+                      <button @click="deleteToken(t)" class="btn btn-danger px-3 py-1 rounded-md text-xs">删除</button>
+                    </td>
+                  </tr>
+                </template>
+                <tr x-show="tokens.length === 0">
+                  <td colspan="5" class="px-5 py-10 text-center text-slate-500 text-sm">还没有 token，使用上方表单添加。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Traffic -->
+        <section x-show="view==='traffic'" x-cloak>
+          <div class="card rounded-xl p-5">
+            <div class="flex items-center justify-between mb-4">
+              <div>
+                <div class="text-sm font-medium">按 Token 流量</div>
+                <div class="text-xs text-slate-500">每分钟请求数，最近 <span x-text="rangeMinutes"></span> 分钟</div>
+              </div>
+              <div class="flex items-center gap-1 text-xs">
+                <template x-for="opt in rangeOptions" :key="opt.value">
+                  <button @click="setRange(opt.value)" class="px-3 py-1 rounded-md" :class="rangeMinutes===opt.value ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'" x-text="opt.label"></button>
+                </template>
+              </div>
+            </div>
+            <canvas id="trafficChart" height="140"></canvas>
+          </div>
+
+          <div class="card rounded-xl p-5 mt-6">
+            <div class="text-sm font-medium mb-4">Token 排行</div>
+            <div class="space-y-3">
+              <template x-for="t in tokensByVolume" :key="t.id">
+                <div>
+                  <div class="flex items-center justify-between text-sm mb-1">
+                    <span class="font-medium" x-text="t.label || t.id"></span>
+                    <span class="tabular-nums text-slate-400" x-text="formatNumber(t.stats?.total) + ' 请求'"></span>
+                  </div>
+                  <div class="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div class="h-full bg-blue-500" :style="{ width: percentOfMax(t.stats?.total) + '%' }"></div>
+                  </div>
+                </div>
+              </template>
+              <div x-show="tokens.length === 0" class="text-slate-500 text-sm">暂无数据</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Settings -->
+        <section x-show="view==='settings'" x-cloak>
+          <div class="card rounded-xl p-5">
+            <div class="text-sm font-medium mb-4">运行时配置</div>
+            <template x-if="config">
+              <dl class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+                <div>
+                  <dt class="text-slate-500 text-xs">LISTEN_ADDR</dt>
+                  <dd class="font-mono" x-text="config.listen_addr"></dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">UPSTREAM_BASE_URL</dt>
+                  <dd class="font-mono" x-text="config.upstream_base_url"></dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">ROTATION_INTERVAL</dt>
+                  <dd class="font-mono" x-text="config.rotation_interval"></dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">REQUEST_TIMEOUT</dt>
+                  <dd class="font-mono" x-text="config.request_timeout"></dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">DATA_DIR</dt>
+                  <dd class="font-mono" x-text="config.data_dir"></dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">客户端 API 鉴权</dt>
+                  <dd><span class="tag" :class="config.api_keys_enabled ? 'tag-ok' : 'tag-mute'" x-text="config.api_keys_enabled ? '已启用' : '未启用（开放访问）'"></span></dd>
+                </div>
+                <div>
+                  <dt class="text-slate-500 text-xs">HTTP_PROXY</dt>
+                  <dd><span class="tag" :class="config.http_proxy_set ? 'tag-warn' : 'tag-mute'" x-text="config.http_proxy_set ? '已设置' : '未设置'"></span></dd>
+                </div>
+              </dl>
+            </template>
+          </div>
+
+          <div class="card rounded-xl p-5 mt-6">
+            <div class="text-sm font-medium mb-3">API 端点</div>
+            <div class="space-y-2 text-sm font-mono">
+              <div><span class="text-slate-500">GET </span>/healthz</div>
+              <div><span class="text-slate-500">GET </span>/v1/models</div>
+              <div><span class="text-slate-500">POST </span>/v1/chat/completions</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Toast -->
+        <div class="fixed bottom-6 right-6 space-y-2 z-50">
+          <template x-for="t in toasts" :key="t.id">
+            <div class="px-4 py-2 rounded-lg shadow-lg text-sm" :class="t.type==='error' ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-100 border border-slate-700'" x-text="t.message"></div>
+          </template>
+        </div>
+      </main>
+    </div>
+  </template>
+
+  <!-- Boot spinner -->
+  <div x-show="!ready" class="min-h-screen flex items-center justify-center">
+    <div class="spinner"></div>
+  </div>
+</div>
+
+<script>
+function adminApp() {
+  return {
+    ready: false,
+    authenticated: false,
+    loginPassword: '',
+    loginError: '',
+    loginBusy: false,
+
+    view: 'dashboard',
+    loading: false,
+    lastRefreshedAt: null,
+
+    overview: {},
+    tokens: [],
+    series: [],
+    config: null,
+
+    rangeMinutes: 60,
+    rangeOptions: [
+      { value: 60, label: '1h' },
+      { value: 360, label: '6h' },
+      { value: 1440, label: '24h' },
+    ],
+
+    newToken: { label: '', token: '' },
+    createBusy: false,
+    createError: '',
+
+    toasts: [],
+    toastId: 0,
+
+    dashboardChart: null,
+    trafficChart: null,
+    refreshTimer: null,
+
+    async boot() {
+      try {
+        const res = await fetch('/admin/api/me', { credentials: 'same-origin' });
+        const data = await res.json();
+        this.authenticated = !!data.authenticated;
+      } catch (err) {
+        this.authenticated = false;
+      }
+      this.ready = true;
+      if (this.authenticated) {
+        await this.refreshAll();
+        this.startAutoRefresh();
+      }
+    },
+
+    startAutoRefresh() {
+      if (this.refreshTimer) return;
+      this.refreshTimer = setInterval(() => this.refreshAll(true), 15000);
+    },
+
+    stopAutoRefresh() {
+      if (this.refreshTimer) {
+        clearInterval(this.refreshTimer);
+        this.refreshTimer = null;
+      }
+    },
+
+    async login() {
+      this.loginBusy = true;
+      this.loginError = '';
+      try {
+        const res = await fetch('/admin/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ password: this.loginPassword }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.loginError = err.error || '登录失败';
+          return;
+        }
+        this.loginPassword = '';
+        this.authenticated = true;
+        await this.refreshAll();
+        this.startAutoRefresh();
+      } catch (err) {
+        this.loginError = String(err);
+      } finally {
+        this.loginBusy = false;
+      }
+    },
+
+    async logout() {
+      try {
+        await fetch('/admin/api/logout', { method: 'POST', credentials: 'same-origin' });
+      } catch (_) {}
+      this.authenticated = false;
+      this.stopAutoRefresh();
+    },
+
+    viewTitle() {
+      switch (this.view) {
+        case 'dashboard': return '概览';
+        case 'tokens': return 'Tokens';
+        case 'traffic': return '流量统计';
+        case 'settings': return '设置';
+        default: return '';
+      }
+    },
+
+    async refreshAll(silent = false) {
+      if (!this.authenticated) return;
+      if (!silent) this.loading = true;
+      try {
+        const [ovRes, tkRes, mRes, cfgRes] = await Promise.all([
+          fetch('/admin/api/overview', { credentials: 'same-origin' }),
+          fetch('/admin/api/tokens', { credentials: 'same-origin' }),
+          fetch('/admin/api/metrics?range=' + this.rangeMinutes, { credentials: 'same-origin' }),
+          fetch('/admin/api/config', { credentials: 'same-origin' }),
+        ]);
+        if (ovRes.status === 401) { this.authenticated = false; this.stopAutoRefresh(); return; }
+        this.overview = await ovRes.json();
+        const tk = await tkRes.json();
+        this.tokens = tk.tokens || [];
+        const m = await mRes.json();
+        this.series = m.series || [];
+        this.config = await cfgRes.json();
+        this.lastRefreshedAt = new Date();
+        this.$nextTick(() => {
+          this.renderDashboardChart();
+          this.renderTrafficChart();
+        });
+      } catch (err) {
+        this.toast(String(err), 'error');
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async setRange(v) {
+      this.rangeMinutes = v;
+      await this.refreshAll(true);
+    },
+
+    async createToken() {
+      if (!this.newToken.token.trim()) return;
+      this.createBusy = true;
+      this.createError = '';
+      try {
+        const res = await fetch('/admin/api/tokens', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ label: this.newToken.label, token: this.newToken.token }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.createError = err.error || '添加失败';
+          return;
+        }
+        this.newToken = { label: '', token: '' };
+        await this.refreshAll(true);
+        this.toast('已添加 token');
+      } catch (err) {
+        this.createError = String(err);
+      } finally {
+        this.createBusy = false;
+      }
+    },
+
+    async updateLabel(token, label) {
+      if (label === token.label) return;
+      await this.patchToken(token.id, { label });
+      this.toast('标签已更新');
+    },
+
+    async toggleToken(token) {
+      await this.patchToken(token.id, { enabled: !token.enabled });
+      this.toast(token.enabled ? '已禁用' : '已启用');
+    },
+
+    async patchToken(id, body) {
+      try {
+        const res = await fetch('/admin/api/tokens/' + encodeURIComponent(id), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.toast(err.error || '更新失败', 'error');
+          return;
+        }
+        await this.refreshAll(true);
+      } catch (err) {
+        this.toast(String(err), 'error');
+      }
+    },
+
+    async deleteToken(token) {
+      if (!confirm('确认删除 ' + (token.label || token.id) + ' ?')) return;
+      try {
+        const res = await fetch('/admin/api/tokens/' + encodeURIComponent(token.id), {
+          method: 'DELETE',
+          credentials: 'same-origin',
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.toast(err.error || '删除失败', 'error');
+          return;
+        }
+        await this.refreshAll(true);
+        this.toast('已删除');
+      } catch (err) {
+        this.toast(String(err), 'error');
+      }
+    },
+
+    toast(message, type = 'info') {
+      const id = ++this.toastId;
+      this.toasts.push({ id, message, type });
+      setTimeout(() => {
+        this.toasts = this.toasts.filter((t) => t.id !== id);
+      }, 3200);
+    },
+
+    // ---------- chart helpers ----------
+    chartLabels() {
+      return this.series.map((p) => {
+        const d = new Date(p.minute_unix * 1000);
+        return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+      });
+    },
+
+    renderDashboardChart() {
+      const el = document.getElementById('dashboardChart');
+      if (!el) return;
+      const labels = this.chartLabels();
+      const datasets = [
+        {
+          label: '成功',
+          data: this.series.map((p) => p.success),
+          backgroundColor: 'rgba(16,185,129,0.2)',
+          borderColor: '#10b981',
+          borderWidth: 1.5,
+          tension: 0.2,
+          fill: true,
+        },
+        {
+          label: '失败',
+          data: this.series.map((p) => p.errors),
+          backgroundColor: 'rgba(244,63,94,0.2)',
+          borderColor: '#f43f5e',
+          borderWidth: 1.5,
+          tension: 0.2,
+          fill: true,
+        },
+      ];
+      this.dashboardChart = upsertChart(this.dashboardChart, el, labels, datasets);
+    },
+
+    renderTrafficChart() {
+      const el = document.getElementById('trafficChart');
+      if (!el) return;
+      const labels = this.chartLabels();
+      const datasets = [
+        {
+          label: '总请求',
+          data: this.series.map((p) => p.total),
+          backgroundColor: 'rgba(59,130,246,0.2)',
+          borderColor: '#3b82f6',
+          borderWidth: 1.5,
+          tension: 0.2,
+          fill: true,
+        },
+      ];
+      this.trafficChart = upsertChart(this.trafficChart, el, labels, datasets);
+    },
+
+    // ---------- formatters ----------
+    formatNumber(v) {
+      if (v === undefined || v === null) return '0';
+      if (v < 1000) return String(v);
+      if (v < 1_000_000) return (v / 1000).toFixed(1) + 'k';
+      return (v / 1_000_000).toFixed(1) + 'M';
+    },
+    formatLatency(ms) {
+      if (!ms) return '—';
+      if (ms < 1000) return ms + 'ms';
+      return (ms / 1000).toFixed(1) + 's';
+    },
+    formatTime(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleString();
+    },
+    formatRelative(date) {
+      if (!date) return '';
+      const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (seconds < 60) return seconds + 's 前';
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + 'm 前';
+      return Math.floor(minutes / 60) + 'h 前';
+    },
+    sessionLabel(t) {
+      if (!t.pool) return '未初始化';
+      if (!t.enabled) return '已禁用';
+      switch (t.pool.session_status) {
+        case 'active': return '就绪';
+        case 'queued': return '排队中';
+        case 'ended': return '已结束';
+        case 'superseded': return '已替换';
+        case 'disabled': return '未使用会话';
+        case 'none': return '会话待建立';
+        default: return t.pool.session_status || '未知';
+      }
+    },
+    sessionTagClass(t) {
+      if (!t.enabled) return 'tag-mute';
+      if (!t.pool) return 'tag-mute';
+      if (t.pool.last_error) return 'tag-err';
+      if (t.pool.session_status === 'active' || t.pool.session_status === 'disabled') return 'tag-ok';
+      if (t.pool.session_status === 'queued') return 'tag-warn';
+      return 'tag-mute';
+    },
+    healthDotClass(t) {
+      if (!t.enabled) return 'bg-slate-500';
+      if (!t.pool) return 'bg-slate-500';
+      if (t.pool.last_error) return 'bg-rose-500';
+      if (t.pool.session_status === 'active' || t.pool.session_status === 'disabled') return 'bg-emerald-500';
+      if (t.pool.session_status === 'queued') return 'bg-amber-400';
+      return 'bg-slate-500';
+    },
+    healthDescription(t) {
+      if (!t.enabled) return '已禁用';
+      if (!t.pool) return '未初始化';
+      if (t.pool.last_error) return t.pool.last_error;
+      return this.sessionLabel(t);
+    },
+    percentOfMax(v) {
+      const max = Math.max(1, ...this.tokens.map((t) => t.stats?.total || 0));
+      return Math.min(100, ((v || 0) / max) * 100);
+    },
+    get tokensByVolume() {
+      return [...this.tokens].sort((a, b) => (b.stats?.total || 0) - (a.stats?.total || 0));
+    },
+  };
+}
+
+function upsertChart(instance, el, labels, datasets) {
+  if (instance) {
+    instance.data.labels = labels;
+    instance.data.datasets = datasets;
+    instance.update('none');
+    return instance;
+  }
+  return new Chart(el, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#cbd5e1', boxWidth: 12 } },
+        tooltip: { backgroundColor: '#0f172a', borderColor: '#1f2937', borderWidth: 1 },
+      },
+      elements: { point: { radius: 0 } },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 10 }, grid: { color: 'rgba(51,65,85,0.3)' } },
+        y: { ticks: { color: '#64748b', precision: 0 }, grid: { color: 'rgba(51,65,85,0.3)' }, beginAtZero: true },
+      },
+    },
+  });
+}
+</script>
+</body>
+</html>

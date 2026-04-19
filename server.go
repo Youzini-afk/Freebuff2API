@@ -14,33 +14,38 @@ import (
 )
 
 type Server struct {
-	cfg     Config
-	logger  *log.Logger
+	cfg      Config
+	logger   *log.Logger
 	client   *UpstreamClient
 	runs     *RunManager
 	registry *ModelRegistry
+	metrics  *Metrics
 	started  time.Time
 }
 
-func NewServer(cfg Config, logger *log.Logger, registry *ModelRegistry) *Server {
+func NewServer(cfg Config, logger *log.Logger, registry *ModelRegistry, metrics *Metrics) *Server {
 	client := NewUpstreamClient(cfg)
 	runManager := NewRunManager(cfg, client, logger)
 
 	return &Server{
-		cfg:     cfg,
-		logger:  logger,
+		cfg:      cfg,
+		logger:   logger,
 		client:   client,
 		runs:     runManager,
 		registry: registry,
+		metrics:  metrics,
 		started:  time.Now(),
 	}
 }
 
-func (s *Server) Handler() http.Handler {
+func (s *Server) Handler(admin *AdminHandler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/v1/models", s.handleModels)
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	if admin != nil {
+		admin.Register(mux)
+	}
 	return s.withMiddleware(mux)
 }
 
@@ -54,6 +59,11 @@ func (s *Server) Shutdown(ctx context.Context) {
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Admin WebUI/API manages its own authentication.
+		if strings.HasPrefix(r.URL.Path, "/admin") {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if len(s.cfg.APIKeys) > 0 && !s.authorized(r) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid proxy api key", "authentication_error", "")
 			return
@@ -147,19 +157,35 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startTime := time.Now()
+	var (
+		metricsTokenID string
+		metricsSuccess bool
+		metricsErrMsg  string
+		metricsStatus  int
+	)
+	defer func() {
+		if s.metrics != nil {
+			s.metrics.Record(metricsTokenID, metricsSuccess, metricsStatus, metricsErrMsg, time.Since(startTime))
+		}
+	}()
 
 	for attempt := 0; attempt < 2; attempt++ {
 		lease, err := s.runs.Acquire(r.Context(), agentID)
 		if err != nil {
+			metricsErrMsg = err.Error()
+			metricsStatus = http.StatusBadGateway
 			writeOpenAIError(w, http.StatusBadGateway, "no healthy upstream auth token available", "server_error", "")
 			return
 		}
+		metricsTokenID = lease.pool.id
 
 		s.logger.Printf("[%s] Routing request (model: %s) via run: %s", lease.pool.name, requestedModel, lease.run.id)
 
 		upstreamBody, err := s.injectUpstreamMetadata(payload, requestedModel, lease.run.id, lease.pool.currentSessionInstanceID())
 		if err != nil {
 			s.runs.Release(lease)
+			metricsErrMsg = err.Error()
+			metricsStatus = http.StatusBadRequest
 			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
 			return
 		}
@@ -167,6 +193,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		resp, errorBody, err := s.client.ChatCompletions(r.Context(), lease.pool.token, upstreamBody)
 		if err != nil {
 			s.runs.Release(lease)
+			metricsErrMsg = err.Error()
+			metricsStatus = http.StatusBadGateway
 			writeOpenAIError(w, http.StatusBadGateway, err.Error(), "server_error", "")
 			return
 		}
@@ -180,6 +208,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			s.logger.Printf("[%s] Request completed successfully in %v (status: %d)", lease.pool.name, time.Since(startTime).Round(time.Millisecond), resp.StatusCode)
 			s.runs.Release(lease)
+			metricsSuccess = true
+			metricsStatus = resp.StatusCode
 			return
 		}
 
@@ -204,10 +234,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		s.runs.Release(lease)
 		s.logger.Printf("[%s] upstream error response: %s", lease.pool.name, string(errorBody))
+		metricsErrMsg = strings.TrimSpace(string(errorBody))
+		metricsStatus = resp.StatusCode
 		writePassthroughError(w, resp.StatusCode, errorBody)
 		return
 	}
 
+	metricsErrMsg = "upstream run expired twice in a row"
+	metricsStatus = http.StatusBadGateway
 	writeOpenAIError(w, http.StatusBadGateway, "upstream run expired twice in a row", "server_error", "")
 }
 
