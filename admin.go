@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -70,6 +71,7 @@ func (a *AdminHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/api/me", a.handleMe)
 	mux.HandleFunc("/admin/api/overview", a.authed(a.handleOverview))
 	mux.HandleFunc("/admin/api/tokens", a.authed(a.handleTokens))
+	mux.HandleFunc("/admin/api/tokens/import", a.authed(a.handleTokenImport))
 	mux.HandleFunc("/admin/api/tokens/", a.authed(a.handleTokenByID))
 	mux.HandleFunc("/admin/api/metrics", a.authed(a.handleMetrics))
 	mux.HandleFunc("/admin/api/metrics/token/", a.authed(a.handleMetricsForToken))
@@ -376,6 +378,45 @@ func (a *AdminHandler) handleTokens(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
+}
+
+func (a *AdminHandler) handleTokenImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "failed to read import file"})
+		return
+	}
+
+	records, err := ParseImportedTokens(data)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+
+	imported, skipped, err := a.store.Import(records)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	views := make([]tokenView, 0, len(imported))
+	if len(imported) > 0 {
+		a.reconcileRuns()
+		for _, record := range imported {
+			views = append(views, a.buildTokenView(record))
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"imported":       views,
+		"imported_count": len(imported),
+		"skipped_count":  skipped,
+	})
 }
 
 func (a *AdminHandler) handleTokenByID(w http.ResponseWriter, r *http.Request) {

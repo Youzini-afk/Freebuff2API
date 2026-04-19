@@ -204,6 +204,20 @@
               </button>
             </form>
             <p class="text-red-400 text-xs mt-3" x-show="createError" x-text="createError"></p>
+
+            <div class="border-t border-slate-800 mt-5 pt-5">
+              <div class="text-sm font-medium mb-1">导入 auth-tokens.json</div>
+              <div class="text-xs text-slate-500 mb-3">支持导入包含 <code class="text-slate-300">authToken</code> 字段的 JSON 文件，也兼容已导出的 tokens.json。</div>
+              <form @submit.prevent="importTokens" class="grid grid-cols-1 md:grid-cols-4 gap-3">
+                <input x-ref="importFileInput" type="file" accept=".json,application/json" @change="selectImportFile($event)" class="input px-3 py-2 rounded-lg md:col-span-3 file:mr-3 file:border-0 file:bg-slate-800 file:text-slate-100 file:px-3 file:py-1.5 file:rounded-md" />
+                <button type="submit" :disabled="importBusy || !importFile" class="btn btn-ghost px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2">
+                  <template x-if="importBusy"><span class="spinner"></span></template>
+                  <span x-text="importBusy ? '导入中…' : '导入文件'"></span>
+                </button>
+              </form>
+              <p class="text-xs text-slate-500 mt-2" x-show="importFile" x-text="importFile ? '已选择：' + importFile.name : ''"></p>
+              <p class="text-red-400 text-xs mt-3" x-show="importError" x-text="importError"></p>
+            </div>
           </div>
 
           <div class="card rounded-xl mt-6 overflow-hidden">
@@ -387,6 +401,10 @@ function adminApp() {
     createBusy: false,
     createError: '',
 
+    importFile: null,
+    importBusy: false,
+    importError: '',
+
     toasts: [],
     toastId: 0,
 
@@ -534,6 +552,44 @@ function adminApp() {
         this.createError = String(err);
       } finally {
         this.createBusy = false;
+      }
+    },
+
+    selectImportFile(event) {
+      const [file] = event.target.files || [];
+      this.importFile = file || null;
+      this.importError = '';
+    },
+
+    async importTokens() {
+      if (!this.importFile) return;
+      this.importBusy = true;
+      this.importError = '';
+      try {
+        const content = await this.importFile.text();
+        const res = await fetch('/admin/api/tokens/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: content,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.importError = data.error || '导入失败';
+          return;
+        }
+        const importedCount = data.imported_count || 0;
+        const skippedCount = data.skipped_count || 0;
+        this.importFile = null;
+        if (this.$refs.importFileInput) {
+          this.$refs.importFileInput.value = '';
+        }
+        await this.refreshAll(true);
+        this.toast('已导入 ' + importedCount + ' 个 token' + (skippedCount ? '，跳过 ' + skippedCount + ' 个重复项' : ''));
+      } catch (err) {
+        this.importError = String(err);
+      } finally {
+        this.importBusy = false;
       }
     },
 

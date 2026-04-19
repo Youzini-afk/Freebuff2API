@@ -30,6 +30,27 @@ type storeFile struct {
 	Tokens  []ManagedToken `json:"tokens"`
 }
 
+type importedTokenEnvelope struct {
+	Tokens []json.RawMessage `json:"tokens"`
+}
+
+type importedManagedToken struct {
+	ID        string    `json:"id"`
+	Label     string    `json:"label"`
+	Token     string    `json:"token"`
+	Enabled   *bool     `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type importedAuthToken struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	AuthToken string `json:"authToken"`
+	AddedAt   string `json:"addedAt"`
+}
+
 // TokenStore persists managed tokens to disk and provides CRUD operations.
 type TokenStore struct {
 	path string
@@ -181,6 +202,88 @@ func (s *TokenStore) Create(label, token string) (ManagedToken, error) {
 	return record, nil
 }
 
+func (s *TokenStore) Import(records []ManagedToken) ([]ManagedToken, int, error) {
+	if len(records) == 0 {
+		return nil, 0, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existingTokens := make(map[string]struct{}, len(s.tokens)+len(records))
+	existingIDs := make(map[string]struct{}, len(s.tokens)+len(records))
+	for _, existing := range s.tokens {
+		existingTokens[existing.Token] = struct{}{}
+		if strings.TrimSpace(existing.ID) != "" {
+			existingIDs[existing.ID] = struct{}{}
+		}
+	}
+
+	originalLen := len(s.tokens)
+	now := time.Now().UTC()
+	imported := make([]ManagedToken, 0, len(records))
+	skipped := 0
+
+	for _, record := range records {
+		token := strings.TrimSpace(record.Token)
+		if token == "" {
+			skipped++
+			continue
+		}
+		if _, exists := existingTokens[token]; exists {
+			skipped++
+			continue
+		}
+
+		label := strings.TrimSpace(record.Label)
+		if label == "" {
+			label = fmt.Sprintf("token-%d", len(s.tokens)+1)
+		}
+
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			id = newTokenID()
+		}
+		for {
+			if _, exists := existingIDs[id]; !exists {
+				break
+			}
+			id = newTokenID()
+		}
+
+		createdAt := record.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = now
+		}
+		updatedAt := record.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = createdAt
+		}
+
+		managed := ManagedToken{
+			ID:        id,
+			Label:     label,
+			Token:     token,
+			Enabled:   record.Enabled,
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		}
+		s.tokens = append(s.tokens, managed)
+		imported = append(imported, managed)
+		existingTokens[token] = struct{}{}
+		existingIDs[id] = struct{}{}
+	}
+
+	if len(imported) == 0 {
+		return nil, skipped, nil
+	}
+	if err := s.persistLocked(); err != nil {
+		s.tokens = s.tokens[:originalLen]
+		return nil, skipped, err
+	}
+	return imported, skipped, nil
+}
+
 // Update modifies mutable fields. Only non-nil pointers are applied.
 func (s *TokenStore) Update(id string, label *string, enabled *bool) (ManagedToken, error) {
 	s.mu.Lock()
@@ -262,4 +365,76 @@ func MaskToken(token string) string {
 		return strings.Repeat("*", len(token))
 	}
 	return token[:4] + strings.Repeat("*", len(token)-8) + token[len(token)-4:]
+}
+
+func ParseImportedTokens(data []byte) ([]ManagedToken, error) {
+	var envelope importedTokenEnvelope
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return nil, fmt.Errorf("parse import file: %w", err)
+	}
+	if len(envelope.Tokens) == 0 {
+		return nil, errors.New("no tokens found in import file")
+	}
+
+	out := make([]ManagedToken, 0, len(envelope.Tokens))
+	for index, raw := range envelope.Tokens {
+		record, err := parseImportedToken(raw, index)
+		if err != nil {
+			return nil, fmt.Errorf("parse imported token %d: %w", index+1, err)
+		}
+		out = append(out, record)
+	}
+	return out, nil
+}
+
+func parseImportedToken(raw json.RawMessage, index int) (ManagedToken, error) {
+	var managed importedManagedToken
+	if err := json.Unmarshal(raw, &managed); err == nil && strings.TrimSpace(managed.Token) != "" {
+		enabled := true
+		if managed.Enabled != nil {
+			enabled = *managed.Enabled
+		}
+		return ManagedToken{
+			ID:        strings.TrimSpace(managed.ID),
+			Label:     strings.TrimSpace(managed.Label),
+			Token:     strings.TrimSpace(managed.Token),
+			Enabled:   enabled,
+			CreatedAt: managed.CreatedAt.UTC(),
+			UpdatedAt: managed.UpdatedAt.UTC(),
+		}, nil
+	}
+
+	var imported importedAuthToken
+	if err := json.Unmarshal(raw, &imported); err == nil && strings.TrimSpace(imported.AuthToken) != "" {
+		label := strings.TrimSpace(imported.Name)
+		if label == "" {
+			label = strings.TrimSpace(imported.Email)
+		}
+		if label == "" {
+			label = strings.TrimSpace(imported.ID)
+		}
+		if label == "" {
+			label = fmt.Sprintf("token-%d", index+1)
+		}
+
+		createdAt := time.Now().UTC()
+		addedAt := strings.TrimSpace(imported.AddedAt)
+		if addedAt != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, addedAt); err == nil {
+				createdAt = parsed.UTC()
+			} else if parsed, err := time.Parse(time.RFC3339, addedAt); err == nil {
+				createdAt = parsed.UTC()
+			}
+		}
+
+		return ManagedToken{
+			Label:     label,
+			Token:     strings.TrimSpace(imported.AuthToken),
+			Enabled:   true,
+			CreatedAt: createdAt,
+			UpdatedAt: createdAt,
+		}, nil
+	}
+
+	return ManagedToken{}, errors.New("unsupported token format")
 }
